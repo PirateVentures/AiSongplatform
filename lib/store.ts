@@ -15,6 +15,7 @@ export function publicJob(job: SongJob): PublicSongJob {
     updatedAt: job.updatedAt,
     status: job.status,
     recipientName: job.recipientName,
+    namePronunciation: job.namePronunciation || "",
     relationship: job.relationship,
     email: job.email,
     marketingOptIn: job.marketingOptIn,
@@ -25,13 +26,18 @@ export function publicJob(job: SongJob): PublicSongJob {
     occasion: job.occasion,
     senderName: job.senderName,
     message: job.message,
+    songTitle: job.songTitle || "",
     lyrics: job.lyrics,
     lyricCues: job.lyricCues || [],
     includeLyricPrint: job.includeLyricPrint,
     previewReady: job.previewReady,
+    previewGate: job.previewGate ?? null,
     listenCompletedAt: job.listenCompletedAt ?? null,
     fullReady: job.fullReady,
     paidAt: job.paidAt,
+    audioDurationSec: job.audioDurationSec ?? null,
+    masterSourceId: job.masterSourceId ?? null,
+    masterFingerprint: job.masterFingerprint ?? null,
   };
 }
 
@@ -61,6 +67,7 @@ export async function createJob(partial: Partial<SongJob>): Promise<SongJob> {
     updatedAt: now,
     status: "intake",
     recipientName: "",
+    namePronunciation: "",
     relationship: "",
     email: "",
     marketingOptIn: false,
@@ -71,13 +78,18 @@ export async function createJob(partial: Partial<SongJob>): Promise<SongJob> {
     occasion: "",
     senderName: "",
     message: "",
+    songTitle: "",
     lyrics: "",
     lyricCues: [],
     includeLyricPrint: false,
     previewReady: false,
+    masterSourceId: null,
+    masterFingerprint: null,
+    previewGate: null,
     listenCompletedAt: null,
     fullReady: false,
     paidAt: null,
+    audioDurationSec: null,
     whopPaymentId: null,
     checkoutSessionId: null,
     ...partial,
@@ -168,36 +180,64 @@ export async function updateJob(id: string, patch: Partial<SongJob>): Promise<So
   return next;
 }
 
-export function audioPath(jobId: string, kind: "preview" | "full") {
-  return path.join(dataDir, "audio", `${jobId}-${kind}.wav`);
+export function audioPath(jobId: string, kind: "preview" | "full", format: "wav" | "mp3" = "wav") {
+  const ext = format === "mp3" ? "mp3" : "wav";
+  return path.join(dataDir, "audio", `${jobId}-${kind}.${ext}`);
 }
 
-export function audioKey(jobId: string, kind: "preview" | "full") {
-  return `audio:${jobId}:${kind}`;
+export function audioKey(jobId: string, kind: "preview" | "full", format: "wav" | "mp3" = "wav") {
+  return format === "mp3" ? `audio:${jobId}:${kind}:mp3` : `audio:${jobId}:${kind}`;
 }
 
-export async function writeAudio(jobId: string, kind: "preview" | "full", bytes: Buffer | Uint8Array) {
+export async function writeAudio(
+  jobId: string,
+  kind: "preview" | "full",
+  bytes: Buffer | Uint8Array,
+  format: "wav" | "mp3" = "wav",
+) {
   const env = await cloudflareBindings();
   const payload = bytes instanceof Buffer ? bytes : Buffer.from(bytes);
   if (env?.AUDIO) {
-    await env.AUDIO.put(audioKey(jobId, kind), payload);
+    await env.AUDIO.put(audioKey(jobId, kind, format), payload);
     return;
   }
-  const file = audioPath(jobId, kind);
+  const file = audioPath(jobId, kind, format);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, payload);
 }
 
-export async function readAudio(jobId: string, kind: "preview" | "full"): Promise<Uint8Array | null> {
+export async function readAudio(
+  jobId: string,
+  kind: "preview" | "full",
+  format: "wav" | "mp3" = "wav",
+): Promise<Uint8Array | null> {
   const env = await cloudflareBindings();
   if (env?.AUDIO) {
-    const value = await env.AUDIO.get(audioKey(jobId, kind), { type: "arrayBuffer" });
+    const value = await env.AUDIO.get(audioKey(jobId, kind, format), { type: "arrayBuffer" });
     return value ? new Uint8Array(value) : null;
   }
   try {
-    return new Uint8Array(await readFile(audioPath(jobId, kind)));
+    return new Uint8Array(await readFile(audioPath(jobId, kind, format)));
   } catch {
     return null;
+  }
+}
+
+export async function deleteAudio(
+  jobId: string,
+  kind: "preview" | "full",
+  format: "wav" | "mp3" = "wav",
+) {
+  const env = await cloudflareBindings();
+  if (env?.AUDIO) {
+    await env.AUDIO.delete(audioKey(jobId, kind, format));
+    return;
+  }
+  try {
+    const { unlink } = await import("node:fs/promises");
+    await unlink(audioPath(jobId, kind, format));
+  } catch {
+    /* missing is fine */
   }
 }
 

@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { brand } from "@/lib/brand";
 import type { PublicSongJob } from "@/lib/types";
 import { LyricAudio } from "@/components/LyricAudio";
+import { PREVIEW_MAX_SECONDS } from "@/lib/preview-cap";
 
 export function PreviewStudio({ id }: { id: string }) {
   const router = useRouter();
   const [job, setJob] = useState<PublicSongJob | null>(null);
   const [lyrics, setLyrics] = useState("");
   const [error, setError] = useState("");
-  const [busy, setBusy] = useState<"save" | "preview" | "listen" | null>(null);
+  const [busy, setBusy] = useState<"save" | "preview" | "listen" | "refresh" | null>(null);
+  const [previousLyrics, setPreviousLyrics] = useState<string | null>(null);
   const [playWhenReady, setPlayWhenReady] = useState(false);
   const [localListened, setLocalListened] = useState(0);
   const persistingRef = useRef(false);
@@ -82,6 +84,46 @@ export function PreviewStudio({ id }: { id: string }) {
     }
   }
 
+  async function tryNewLyrics() {
+    const saved = (job?.lyrics || "").trim();
+    const current = lyrics.trim();
+    const heavilyEdited = current.length > 0 && current !== saved;
+    if (heavilyEdited) {
+      const ok = window.confirm(
+        "You've edited these lyrics. Try a fresh draft instead? You can undo once.",
+      );
+      if (!ok) return;
+    }
+    setBusy("refresh");
+    setError("");
+    try {
+      const response = await fetch(`/api/jobs/${id}/lyrics`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ regenerate: true }),
+      });
+      const json = (await response.json()) as { error?: string; job?: PublicSongJob };
+      if (!response.ok) throw new Error(json.error || "Could not draft new lyrics.");
+      const nextLyrics = json.job?.lyrics || "";
+      setPreviousLyrics(lyrics);
+      setLyrics(nextLyrics);
+      setJob(json.job ?? null);
+      setLocalListened(0);
+      setPlayWhenReady(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not draft new lyrics.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  function undoLyrics() {
+    if (previousLyrics === null) return;
+    setLyrics(previousLyrics);
+    setPreviousLyrics(null);
+    setError("");
+  }
+
   async function makePreview() {
     setBusy("preview");
     setError("");
@@ -148,6 +190,24 @@ export function PreviewStudio({ id }: { id: string }) {
           </button>
           <button
             type="button"
+            onClick={tryNewLyrics}
+            disabled={busy !== null}
+            className="rounded-full border border-[var(--copper)] bg-[#f8e7db] px-4 py-2 text-[var(--copper-dark)]"
+          >
+            {busy === "refresh" ? "Writing a fresh draft…" : "Try new lyrics"}
+          </button>
+          {previousLyrics !== null ? (
+            <button
+              type="button"
+              onClick={undoLyrics}
+              disabled={busy !== null}
+              className="rounded-full border border-[var(--line)] px-4 py-2 text-sm text-[var(--muted)]"
+            >
+              Undo
+            </button>
+          ) : null}
+          <button
+            type="button"
             onClick={makePreview}
             disabled={busy !== null}
             className="rounded-full bg-[var(--copper)] px-4 py-2 text-white"
@@ -155,6 +215,10 @@ export function PreviewStudio({ id }: { id: string }) {
             {busy === "preview" ? "Making preview…" : "Create preview"}
           </button>
         </div>
+        <p className="mt-2 text-xs text-[var(--muted)]">
+          Want a different feel? Try new lyrics — same story, fresh words. You can still edit before
+          the preview.
+        </p>
       </section>
 
       <section className="rounded-3xl border border-[var(--line)] bg-[var(--card)] p-6">
@@ -163,15 +227,17 @@ export function PreviewStudio({ id }: { id: string }) {
           <>
             <LyricAudio
               key={job.updatedAt}
-              src={`/api/jobs/${id}/audio?t=${encodeURIComponent(job.updatedAt)}`}
+              src={`/api/jobs/${id}/audio?format=mp3&t=${encodeURIComponent(job.updatedAt)}`}
               cues={job.lyricCues || []}
               fallbackLyrics={job.lyrics}
               autoPlay={playWhenReady}
+              maxPlaySeconds={PREVIEW_MAX_SECONDS}
+              encodedDurationSec={job.audioDurationSec}
               onListenProgress={onListenProgress}
             />
             <p className="mt-3 text-sm text-[var(--muted)]">
-              The preview sings your lyric lines over a backing track. Each word highlights as it
-              is sung. This is original generated music, not a studio recording artist.
+              Free {PREVIEW_MAX_SECONDS}-second preview with lyrics on screen. This is
+              original generated music, not a studio recording artist.
             </p>
             <button
               type="button"
