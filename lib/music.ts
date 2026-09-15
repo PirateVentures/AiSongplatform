@@ -1,11 +1,27 @@
-import { writeAudio } from "./store";
+import { writeAudio, deleteAudio } from "./store";
 import type { LyricCue, LyricWordCue } from "./cues";
+import { cueSpanEnd, rescaleCuesToDuration } from "./cues";
 import { splitSyllables, sungLines } from "./lyric-parse";
 import { renderWithElevenLabs } from "./music-elevenlabs";
 import { renderWithXai } from "./music-xai";
 import type { SongJob } from "./types";
+import { PREVIEW_MAX_SECONDS } from "./preview-cap";
 
 export { splitSyllables, sungLines } from "./lyric-parse";
+
+export type RenderedAudio = {
+  wav: Buffer;
+  cues: LyricCue[];
+  mp3?: Buffer;
+  sungAligned?: boolean;
+  stampCount?: number;
+  singleComposeSource?: boolean;
+  dualComposeUsed?: boolean;
+  forceInstrumentalFalse?: boolean;
+  lyricsInEveryChunk?: boolean;
+  provider?: "elevenlabs" | "xai" | "synth";
+  hasRealGraphStamps?: boolean;
+};
 
 function hashSeed(input: string) {
   let h = 2166136261;
@@ -199,7 +215,8 @@ function pickSungLines(
   seconds: number,
   recipientName: string,
 ) {
-  if (seconds > 60 || lines.length <= 8) return lines;
+  // Preview lengths (62–90s) still need chorus/name priority — do not burn time on filler verses.
+  if (seconds > 120 || lines.length <= 8) return lines;
   const name = recipientName.trim().toLowerCase();
   const chosen = new Map<number, (typeof lines)[number]>();
   let verseTaken = 0;
@@ -341,7 +358,7 @@ function resolveMusicProvider(): "elevenlabs" | "xai" | "synth" {
   return "elevenlabs";
 }
 
-async function renderWithXaiAndBed(job: SongJob, seconds: number) {
+async function renderWithXaiAndBed(job: SongJob, seconds: number): Promise<RenderedAudio> {
   if (!process.env.XAI_API_KEY) {
     throw new Error(
       "Music provider is xAI Grok TTS, but XAI_API_KEY is not set. " +
@@ -350,23 +367,51 @@ async function renderWithXaiAndBed(job: SongJob, seconds: number) {
     );
   }
   const vocals = await renderWithXai(job, seconds);
+  const meta = {
+    sungAligned: Boolean(vocals.hasRealGraphStamps && vocals.cues.length),
+    stampCount: vocals.cues.reduce((n, c) => n + (c.words?.length || 0), 0),
+    singleComposeSource: true,
+    dualComposeUsed: false,
+    forceInstrumentalFalse: true,
+    lyricsInEveryChunk: true,
+    provider: "xai" as const,
+    hasRealGraphStamps: Boolean(vocals.hasRealGraphStamps),
+  };
   if (!vocals.samples.length || !vocals.sampleRate) {
-    return { wav: vocals.wav, cues: vocals.cues };
+    return { wav: vocals.wav, cues: vocals.cues, ...meta };
   }
   try {
     const bed = renderInstrumentalBed(job, vocals.duration, vocals.sampleRate);
     const mixed = mixVocalWithBed(vocals.samples, bed);
-    return { wav: encodeWav(mixed, vocals.sampleRate), cues: vocals.cues };
+    return { wav: encodeWav(mixed, vocals.sampleRate), cues: vocals.cues, ...meta };
   } catch (error) {
     console.error("[music] instrumental bed mix failed; serving a-cappella xAI vocals", error);
-    return { wav: vocals.wav, cues: vocals.cues };
+    return { wav: vocals.wav, cues: vocals.cues, ...meta };
   }
 }
 
-async function renderForJob(job: SongJob, seconds: number) {
+function isElevenLabsPaidPlanError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  return (
+    /\b402\b/.test(message) ||
+    lower.includes("paid_plan_required") ||
+    lower.includes("not available for free")
+  );
+}
+
+async function renderForJob(job: SongJob, seconds: number): Promise<RenderedAudio> {
   const provider = resolveMusicProvider();
   if (provider === "synth") {
-    return renderSong(job, seconds);
+    const synth = await renderSong(job, seconds);
+    return {
+      ...synth,
+      provider: "synth" as const,
+      singleComposeSource: true,
+      dualComposeUsed: false,
+      sungAligned: false,
+      hasRealGraphStamps: false,
+    };
   }
   if (provider === "elevenlabs") {
     if (!process.env.ELEVENLABS_API_KEY) {
@@ -376,19 +421,268 @@ async function renderForJob(job: SongJob, seconds: number) {
           "(or set MUSIC_PROVIDER=xai with XAI_API_KEY, or MUSIC_PROVIDER=synth for local formant tests only).",
       );
     }
-    return renderWithElevenLabs(job, seconds);
+    try {
+      const el = await renderWithElevenLabs(job, seconds);
+      return { ...el, provider: "elevenlabs" as const };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "");
+      // Free EL Music returns HTTP 402 paid_plan_required — soft-fallback to xAI when available
+      // (gate still refuses xAI TTS+bed as product preview). Do NOT use xAI to "fix" NO_VOCAL_PREVIEW —
+      // MC: priority path is NEW EL Music single-compose, not polished TTS+bed.
+      if (process.env.XAI_API_KEY && isElevenLabsPaidPlanError(error)) {
+        console.error(
+          "[music] ElevenLabs Music paid_plan/402; soft-fallback to xAI (gate will refuse product publish).",
+          message,
+        );
+        return renderWithXaiAndBed(job, seconds);
+      }
+      if (/NO_VOCAL_PREVIEW/i.test(message)) {
+        console.error(
+          "[music] EL NO_VOCAL_PREVIEW — refusing xAI TTS+bed product path; need EL single-compose sung preview.",
+          message,
+        );
+      }
+      throw error;
+    }
   }
   return renderWithXaiAndBed(job, seconds);
 }
 
-export async function writePreviewAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 45);
-  await writeAudio(job.id, "preview", wav);
-  return cues;
+/** Einstein PERFECT LOCK v2: heartfelt ~70s (floor 60); dense lyrics ≳180 words → 80–90s. */
+export function isHeartfeltOccasion(occasion: string): boolean {
+  return ["birthday", "anniversary", "in-memory", "thank-you", "wedding"].includes(occasion);
+}
+
+export function previewTargetSeconds(job: SongJob): number {
+  // Einstein G / MUSIC BAR v2: heartfelt ≥60s floor (70 default; dense → 85).
+  // Non-heartfelt stays at free-preview 45s marketing copy.
+  if (isHeartfeltOccasion(job.occasion || "")) {
+    const words = (job.lyrics || "").split(/\s+/).filter(Boolean).length;
+    if (words >= 180) return 85;
+    return 70;
+  }
+  return PREVIEW_MAX_SECONDS;
+}
+
+export async function writePreviewAudio(job: SongJob): Promise<{
+  cues: import("./cues").LyricCue[];
+  audioDurationSec: number;
+  previewGate: import("./preview-acceptance-gate").PreviewGateResult;
+  /** Sung-aligned display lyrics (never unsung script). */
+  lyrics: string;
+  masterSourceId: string;
+  masterFingerprint: string;
+}> {
+  const seconds = previewTargetSeconds(job);
+  const rendered = await renderForJob(job, seconds);
+  const { truncateWavToSeconds } = await import("./preview-cap");
+  const { audioDurationSeconds } = await import("./music-elevenlabs");
+  const { cuesLookEqualSliced } = await import("./cues");
+  const { runPreviewAcceptanceGate } = await import("./preview-acceptance-gate");
+
+  // Truncate to compose target (MUSIC BAR for heartfelt) — not a silent 45 crush on 70s masters.
+  const wav = Buffer.from(truncateWavToSeconds(new Uint8Array(rendered.wav), seconds));
+  let cues = (rendered.cues || []).filter((c) => c.start < seconds);
+
+  // Refuse equal-time fake karaoke word slices (do not publish as sync).
+  const equalSliced = cuesLookEqualSliced(cues);
+  if (equalSliced) {
+    cues = cues.map((c) => ({
+      text: c.text,
+      start: c.start,
+      end: c.end,
+      section: c.section,
+    }));
+  }
+
+  const audioDurationSec =
+    audioDurationSeconds(wav) || Math.min(seconds, cueSpanEnd(cues) || seconds);
+  // Honesty: published WAV seconds only — never composition-plan target (fc06 120 vs 85).
+  const duration = audioDurationSec > 1 ? audioDurationSec : seconds;
+
+  const { cuesWithSungWordsOnly, lyricsFromSungCues } = await import("./lyric-parse");
+  // Drop unsung cue shells (zero word stamps) — paid fc06 Mayan/high-road RCA.
+  cues = cuesWithSungWordsOnly(cues);
+  // Align display to what was sung; never keep unsung script lines on-screen.
+  const sungLyrics = cues.length ? lyricsFromSungCues(cues) : (job.lyrics || "");
+  const jobForGate = { ...job, lyrics: sungLyrics };
+
+  const provider = rendered.provider || "unknown";
+  const sungAligned = Boolean(
+    rendered.sungAligned && cues.length && !cuesLookEqualSliced(cues),
+  );
+
+  // Gate on the EXACT WAV bytes we will publish (single-compose source).
+  // Einstein A: never write a sibling MP3 from a second compose.
+  const { audioHeadFingerprint, newMasterSourceId } = await import("./master-source");
+  const { codeBlockingFailures } = await import("./preview-acceptance-gate");
+  const masterFingerprint = audioHeadFingerprint(wav);
+  const masterSourceId =
+    job.masterSourceId || newMasterSourceId(job.id, masterFingerprint);
+
+  const previewGate = runPreviewAcceptanceGate({
+    job: jobForGate,
+    publishedWav: wav,
+    publishedMp3: null,
+    cues,
+    audioDurationSec: duration,
+    singleComposeSource: rendered.singleComposeSource !== false,
+    dualComposeUsed: Boolean(rendered.dualComposeUsed),
+    sungAligned,
+    stampCount: rendered.stampCount,
+    forceInstrumentalFalse: rendered.forceInstrumentalFalse !== false,
+    lyricsInEveryChunk: rendered.lyricsInEveryChunk !== false,
+    provider: provider === "elevenlabs" || provider === "xai" || provider === "synth" ? provider : "unknown",
+    xaiHasRealGraphStamps: Boolean(rendered.hasRealGraphStamps),
+    giftFramingPresent: true,
+    payPathPresent: true,
+    // Intelligibility: ASR/human ear still required — do not auto-pass.
+    asrOverlap: null,
+    coldLinkEarPass: null,
+    masterSourceId,
+    masterFingerprint,
+    gatePhase: "preview",
+  });
+
+  // Code-blocking failures (not ear-pending) refuse writing public bytes.
+  // Gate.pass stays honest: false while intelligibility/ear fail.
+  const blocking = codeBlockingFailures(previewGate);
+  if (blocking.length) {
+    const err = new Error(
+      `PREVIEW_GATE_FAIL: ${previewGate.failures.length} proof(s) failed — ` +
+        previewGate.failures
+          .slice(0, 6)
+          .map((f) => `${f.id}: ${f.reason}`)
+          .join(" | "),
+    ) as Error & { previewGate: typeof previewGate };
+    err.previewGate = previewGate;
+    throw err;
+  }
+
+  await writeAudio(job.id, "preview", wav, "wav");
+  // Delete any stale dual-compose / instrumental MP3 so /audio serves THIS WAV.
+  await deleteAudio(job.id, "preview", "mp3");
+
+  return {
+    cues,
+    audioDurationSec: duration,
+    previewGate,
+    lyrics: sungLyrics,
+    masterSourceId,
+    masterFingerprint,
+  };
+}
+
+/**
+ * Joseph ONE-master: after full is written, overwrite preview KV with a
+ * preview-cap (truncate) of THAT full master so preview page and song page
+ * share the same voice/cadence/take. Never leave a parallel preview take.
+ */
+export async function syncPreviewFromFullMaster(
+  jobId: string,
+  fullWav: Uint8Array | Buffer | null,
+  fullMp3: Uint8Array | Buffer | null,
+  previewCapSec: number,
+): Promise<{ previewDerivedFromFull: true }> {
+  const { truncateWavToSeconds, truncateMp3ToSeconds } = await import("./preview-cap");
+  if (fullWav && fullWav.byteLength > 1024) {
+    const capped = truncateWavToSeconds(new Uint8Array(fullWav), previewCapSec);
+    await writeAudio(jobId, "preview", Buffer.from(capped), "wav");
+  } else {
+    await deleteAudio(jobId, "preview", "wav");
+  }
+  if (fullMp3 && fullMp3.byteLength > 1024) {
+    const capped = truncateMp3ToSeconds(new Uint8Array(fullMp3), previewCapSec);
+    await writeAudio(jobId, "preview", Buffer.from(capped), "mp3");
+  } else {
+    // Avoid stale MP3 from a different take lying as preview.
+    await deleteAudio(jobId, "preview", "mp3");
+  }
+  return { previewDerivedFromFull: true };
 }
 
 export async function writeFullAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 135);
-  await writeAudio(job.id, "full", wav);
-  return cues;
+  // Paid path: ONE compose at full length, then preview = cap of that master.
+  // Do not keep an earlier free-preview take after unlock (Joseph ONE-master).
+  const priorPreview = await (await import("./store")).readAudio(job.id, "preview", "wav");
+  const rendered = await renderForJob(job, 135);
+  const { PREVIEW_MAX_SECONDS } = await import("./preview-cap");
+  const { assertPaidFullAudio, mp3XingMismatch } = await import("./mp3");
+  const { audioHeadFingerprint, newMasterSourceId, bytesLookSameMasterFamily } =
+    await import("./master-source");
+
+  // HARD GATE: never publish preview-length / lying-Xing as paid full.
+  const gate = assertPaidFullAudio(rendered.wav, rendered.mp3, PREVIEW_MAX_SECONDS);
+  if (!gate.mp3Ok && gate.reason !== "missing_mp3") {
+    console.error("[music] dropping full MP3 (integrity failed)", {
+      jobId: job.id,
+      reason: gate.reason,
+      wavSec: gate.wavSec,
+      mp3Bytes: rendered.mp3?.byteLength ?? 0,
+      xingMismatch: rendered.mp3 ? mp3XingMismatch(rendered.mp3) : false,
+    });
+  }
+
+  const fullMp3 = gate.mp3Ok && rendered.mp3 && rendered.mp3.byteLength > 0 ? rendered.mp3 : null;
+  await writeAudio(job.id, "full", rendered.wav, "wav");
+  if (fullMp3) {
+    await writeAudio(job.id, "full", fullMp3, "mp3");
+  }
+
+  const related = bytesLookSameMasterFamily(
+    priorPreview,
+    new Uint8Array(rendered.wav),
+  );
+  const parallelFullRecompose = Boolean(priorPreview?.byteLength) && !related.ok;
+
+  // Always overwrite preview from THIS full master (cap) — clears dual-take.
+  const capSec = Math.max(previewTargetSeconds(job), PREVIEW_MAX_SECONDS);
+  await syncPreviewFromFullMaster(job.id, rendered.wav, fullMp3, capSec);
+
+  const masterFingerprint = audioHeadFingerprint(new Uint8Array(rendered.wav));
+  const masterSourceId = newMasterSourceId(job.id, masterFingerprint);
+
+  // WAV master is always written; MP3 backfill via box ffmpeg if EL bitstream was bad.
+  // Fit cues to the master that was actually stored (not the EL stamp timeline).
+  const { audioDurationSeconds } = await import("./music-elevenlabs");
+  let cues = rendered.cues || [];
+  let audioDurationSec = 0;
+  try {
+    const { resolveEncodedFullDurationSec } = await import("./true-duration");
+    const dur =
+      (await resolveEncodedFullDurationSec({
+        wav: rendered.wav,
+        mp3: fullMp3,
+        cues,
+      })) ||
+      audioDurationSeconds(rendered.wav) ||
+      cueSpanEnd(cues) ||
+      0;
+    audioDurationSec = dur > 1 ? dur : 0;
+    if (dur > 1 && cues.length) {
+      cues = rescaleCuesToDuration(cues, dur);
+      // Refuse to ship cue span that still mismatches encoded audio.
+      if (Math.abs(cueSpanEnd(cues) - dur) > 2) {
+        console.error("[music] cue span mismatch after fit — refusing cues", {
+          jobId: job.id,
+          dur,
+          cueEnd: cueSpanEnd(cues),
+        });
+        cues = [];
+      }
+    }
+    // Never ship unsung cue shells on paid full (fc06: Mayan / high-road).
+    const { cuesWithSungWordsOnly } = await import("./lyric-parse");
+    cues = cuesWithSungWordsOnly(cues);
+  } catch (error) {
+    console.error("[music] cue rescale after full write failed", error);
+  }
+  return {
+    cues,
+    audioDurationSec,
+    masterSourceId,
+    masterFingerprint,
+    previewDerivedFromFull: true as const,
+    parallelFullRecompose,
+  };
 }
