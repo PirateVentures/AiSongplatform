@@ -15,6 +15,8 @@ export type SongJob = {
   updatedAt: string;
   status: JobStatus;
   recipientName: string;
+  /** Optional how-to-say-it guide for singing; never used as lyric spelling. */
+  namePronunciation: string;
   relationship: RelationshipId | "";
   email: string;
   marketingOptIn: boolean;
@@ -25,6 +27,8 @@ export type SongJob = {
   occasion: OccasionId | "";
   senderName: string;
   message: string;
+  /** Optional display title chosen/typed by the giver. */
+  songTitle: string;
   lyrics: string;
   lyricCues: LyricCue[];
   includeLyricPrint: boolean;
