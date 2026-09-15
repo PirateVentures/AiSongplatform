@@ -1,11 +1,15 @@
 import { writeAudio } from "./store";
 import type { LyricCue, LyricWordCue } from "./cues";
+import { cueSpanEnd, rescaleCuesToDuration } from "./cues";
 import { splitSyllables, sungLines } from "./lyric-parse";
 import { renderWithElevenLabs } from "./music-elevenlabs";
 import { renderWithXai } from "./music-xai";
 import type { SongJob } from "./types";
+import { PREVIEW_MAX_SECONDS } from "./preview-cap";
 
 export { splitSyllables, sungLines } from "./lyric-parse";
+
+export type RenderedAudio = { wav: Buffer; cues: LyricCue[]; mp3?: Buffer };
 
 function hashSeed(input: string) {
   let h = 2166136261;
@@ -199,7 +203,8 @@ function pickSungLines(
   seconds: number,
   recipientName: string,
 ) {
-  if (seconds > 60 || lines.length <= 8) return lines;
+  // Preview lengths (62–90s) still need chorus/name priority — do not burn time on filler verses.
+  if (seconds > 120 || lines.length <= 8) return lines;
   const name = recipientName.trim().toLowerCase();
   const chosen = new Map<number, (typeof lines)[number]>();
   let verseTaken = 0;
@@ -363,7 +368,17 @@ async function renderWithXaiAndBed(job: SongJob, seconds: number) {
   }
 }
 
-async function renderForJob(job: SongJob, seconds: number) {
+function isElevenLabsPaidPlanError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  return (
+    /\b402\b/.test(message) ||
+    lower.includes("paid_plan_required") ||
+    lower.includes("not available for free")
+  );
+}
+
+async function renderForJob(job: SongJob, seconds: number): Promise<RenderedAudio> {
   const provider = resolveMusicProvider();
   if (provider === "synth") {
     return renderSong(job, seconds);
@@ -376,19 +391,99 @@ async function renderForJob(job: SongJob, seconds: number) {
           "(or set MUSIC_PROVIDER=xai with XAI_API_KEY, or MUSIC_PROVIDER=synth for local formant tests only).",
       );
     }
-    return renderWithElevenLabs(job, seconds);
+    try {
+      return await renderWithElevenLabs(job, seconds);
+    } catch (error) {
+      // Free EL Music returns HTTP 402 paid_plan_required — soft-fallback to xAI when available.
+      if (isElevenLabsPaidPlanError(error) && process.env.XAI_API_KEY) {
+        console.error(
+          "[music] ElevenLabs Music unavailable (paid plan); falling back to xAI.",
+          error instanceof Error ? error.message : error,
+        );
+        return renderWithXaiAndBed(job, seconds);
+      }
+      throw error;
+    }
   }
   return renderWithXaiAndBed(job, seconds);
 }
 
+/** Einstein PERFECT LOCK v2: heartfelt ~70s (floor 60); dense lyrics ≳180 words → 80–90s. */
+export function isHeartfeltOccasion(occasion: string): boolean {
+  return ["birthday", "anniversary", "in-memory", "thank-you", "wedding"].includes(occasion);
+}
+
+export function previewTargetSeconds(_job: SongJob): number {
+  // Hard lock to site “45-second preview” copy.
+  return PREVIEW_MAX_SECONDS;
+}
+
 export async function writePreviewAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 45);
-  await writeAudio(job.id, "preview", wav);
-  return cues;
+  const seconds = previewTargetSeconds(job);
+  const rendered = await renderForJob(job, seconds);
+  const { truncateWavToSeconds, truncateMp3ToSeconds } = await import("./preview-cap");
+  const wav = Buffer.from(truncateWavToSeconds(new Uint8Array(rendered.wav), seconds));
+  await writeAudio(job.id, "preview", wav, "wav");
+  if (rendered.mp3 && rendered.mp3.byteLength > 0) {
+    const mp3 = Buffer.from(truncateMp3ToSeconds(new Uint8Array(rendered.mp3), seconds));
+    await writeAudio(job.id, "preview", mp3, "mp3");
+  }
+  // Drop cues that start at/after the hard cap so UI doesn't run past preview.
+  return (rendered.cues || []).filter((c) => c.start < seconds);
 }
 
 export async function writeFullAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 135);
-  await writeAudio(job.id, "full", wav);
-  return cues;
+  const rendered = await renderForJob(job, 135);
+  const { PREVIEW_MAX_SECONDS } = await import("./preview-cap");
+  const { assertPaidFullAudio, mp3XingMismatch } = await import("./mp3");
+
+  // HARD GATE: never publish preview-length / lying-Xing as paid full.
+  const gate = assertPaidFullAudio(rendered.wav, rendered.mp3, PREVIEW_MAX_SECONDS);
+  if (!gate.mp3Ok && gate.reason !== "missing_mp3") {
+    console.error("[music] dropping full MP3 (integrity failed)", {
+      jobId: job.id,
+      reason: gate.reason,
+      wavSec: gate.wavSec,
+      mp3Bytes: rendered.mp3?.byteLength ?? 0,
+      xingMismatch: rendered.mp3 ? mp3XingMismatch(rendered.mp3) : false,
+    });
+  }
+
+  await writeAudio(job.id, "full", rendered.wav, "wav");
+  if (gate.mp3Ok && rendered.mp3 && rendered.mp3.byteLength > 0) {
+    await writeAudio(job.id, "full", rendered.mp3, "mp3");
+  }
+  // WAV master is always written; MP3 backfill via box ffmpeg if EL bitstream was bad.
+  // Fit cues to the master that was actually stored (not the EL stamp timeline).
+  const { audioDurationSeconds } = await import("./music-elevenlabs");
+  let cues = rendered.cues || [];
+  let audioDurationSec = 0;
+  try {
+    const { resolveEncodedFullDurationSec } = await import("./true-duration");
+    const dur =
+      (await resolveEncodedFullDurationSec({
+        wav: rendered.wav,
+        mp3: gate.mp3Ok ? rendered.mp3 : null,
+        cues,
+      })) ||
+      audioDurationSeconds(rendered.wav) ||
+      cueSpanEnd(cues) ||
+      0;
+    audioDurationSec = dur > 1 ? dur : 0;
+    if (dur > 1 && cues.length) {
+      cues = rescaleCuesToDuration(cues, dur);
+      // Refuse to ship cue span that still mismatches encoded audio.
+      if (Math.abs(cueSpanEnd(cues) - dur) > 2) {
+        console.error("[music] cue span mismatch after fit — refusing cues", {
+          jobId: job.id,
+          dur,
+          cueEnd: cueSpanEnd(cues),
+        });
+        cues = [];
+      }
+    }
+  } catch (error) {
+    console.error("[music] cue rescale after full write failed", error);
+  }
+  return { cues, audioDurationSec };
 }

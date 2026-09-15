@@ -1,7 +1,16 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LyricCue } from "@/lib/cues";
+import {
+  activeCueIndex,
+  cueSpanEnd,
+  cuesNeedRescale,
+  rescaleCuesToDuration,
+  resolvePlayableDurationSec,
+  sealCueGaps,
+  wordsLookUnreliable,
+} from "@/lib/cues";
 import { listenRequirementHint, meetsListenRequirement } from "@/lib/listen";
 
 function formatTime(seconds: number) {
@@ -16,39 +25,98 @@ export function LyricAudio({
   cues,
   fallbackLyrics,
   autoPlay = false,
+  maxPlaySeconds,
+  encodedDurationSec,
+  jobId,
   onListenProgress,
+  gift = false,
+  title,
 }: {
   src: string;
   cues: LyricCue[];
   fallbackLyrics?: string;
   autoPlay?: boolean;
+  /** When set (preview ONLY), hard-stop playback at this many seconds. Never pass on gift/full. */
+  maxPlaySeconds?: number;
+  /** Authoritative encode length (WAV PCM / job.audioDurationSec). Beats HTMLMediaElement.duration. */
+  encodedDurationSec?: number | null;
+  /** Optional: POST /repair-cues when client detects span mismatch on full play. */
+  jobId?: string;
   /** Fired with accumulated real playtime (seeks ignored). Not fired from onLoadedData. */
   onListenProgress?: (info: {
     listenedSeconds: number;
     durationSeconds: number;
     complete: boolean;
   }) => void;
+  /** Soft gift framing for private /song and post-pay. */
+  gift?: boolean;
+  title?: string;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const activeRef = useRef<HTMLParagraphElement>(null);
   const lastTickRef = useRef(0);
   const listenedRef = useRef(0);
   const completeRef = useRef(false);
+  const repairPostedRef = useRef(false);
   const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
   const [listened, setListened] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [blocked, setBlocked] = useState(false);
+
+  // Preview cap must NEVER apply on full/unlocked playback.
+  const cap =
+    typeof maxPlaySeconds === "number" && maxPlaySeconds > 0
+      ? maxPlaySeconds
+      : null;
+
+  const cueEnd = useMemo(() => cueSpanEnd(cues || []), [cues]);
+
+  const playableDuration = useMemo(() => {
+    if (cap) return cap;
+    return resolvePlayableDurationSec({
+      encodedSec: encodedDurationSec,
+      mediaSec: mediaDuration,
+      cueEndSec: cueEnd,
+      slackSec: 2,
+    });
+  }, [cap, encodedDurationSec, mediaDuration, cueEnd]);
+
+  const fittedCues = useMemo(() => {
+    const list = cues || [];
+    if (!list.length) return list;
+    // Full play: fit to TRUE playable duration — never to inflated media alone.
+    const target = playableDuration;
+    if (target > 1 && cuesNeedRescale(list, target, 2)) {
+      return rescaleCuesToDuration(list, target);
+    }
+    if (target > 1) return sealCueGaps(list, target);
+    return list;
+  }, [cues, playableDuration]);
 
   useEffect(() => {
     listenedRef.current = 0;
     completeRef.current = false;
     lastTickRef.current = 0;
+    repairPostedRef.current = false;
     setListened(0);
     setTime(0);
-    setDuration(0);
+    setMediaDuration(0);
     setPlaying(false);
   }, [src]);
+
+  // Optional soft repair when full cues disagree with encoded/true duration.
+  useEffect(() => {
+    if (cap || !jobId || repairPostedRef.current) return;
+    if (!(playableDuration > 1) || !(cueEnd > 0.5)) return;
+    if (Math.abs(cueEnd - playableDuration) <= 2) return;
+    repairPostedRef.current = true;
+    void fetch(`/api/jobs/${jobId}/repair-cues`, { method: "POST" }).catch(
+      () => {
+        /* best-effort */
+      },
+    );
+  }, [cap, jobId, playableDuration, cueEnd]);
 
   useEffect(() => {
     const node = audioRef.current;
@@ -66,14 +134,34 @@ export function LyricAudio({
 
     const onTime = () => {
       const current = node.currentTime || 0;
-      const dur = Number.isFinite(node.duration) ? node.duration : 0;
+      const rawDur = Number.isFinite(node.duration) ? node.duration : 0;
+      if (rawDur > 0) setMediaDuration(rawDur);
+
+      const trueDur = resolvePlayableDurationSec({
+        encodedSec: encodedDurationSec,
+        mediaSec: rawDur,
+        cueEndSec: cueEnd,
+        slackSec: 2,
+      });
+      const dur = cap && trueDur > 0 ? Math.min(trueDur, cap) : cap || trueDur;
+
+      if (cap && current >= cap) {
+        node.pause();
+        try {
+          node.currentTime = cap;
+        } catch {
+          /* ignore seek errors */
+        }
+        setTime(cap);
+        setPlaying(false);
+        lastTickRef.current = cap;
+        return;
+      }
       setTime(current);
-      if (dur > 0) setDuration(dur);
 
       if (!node.paused && !node.ended) {
         const prev = lastTickRef.current;
         const delta = current - prev;
-        // Count only forward playback ticks; ignore seeks/jumps.
         if (delta > 0 && delta < 1.25) {
           const next = listenedRef.current + delta;
           listenedRef.current = next;
@@ -86,7 +174,7 @@ export function LyricAudio({
 
     const onMeta = () => {
       const dur = Number.isFinite(node.duration) ? node.duration : 0;
-      if (dur > 0) setDuration(dur);
+      if (dur > 0) setMediaDuration(dur);
     };
 
     const onPlay = () => {
@@ -112,7 +200,7 @@ export function LyricAudio({
       node.removeEventListener("pause", onPause);
       node.removeEventListener("ended", onPause);
     };
-  }, [src, onListenProgress]);
+  }, [src, onListenProgress, cap, encodedDurationSec, cueEnd]);
 
   useEffect(() => {
     const node = audioRef.current;
@@ -125,11 +213,16 @@ export function LyricAudio({
     }
   }, [src, autoPlay]);
 
+  const active = activeCueIndex(fittedCues, time);
+
   useEffect(() => {
     activeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [time]);
+  }, [active]);
 
-  const active = cues.findIndex((cue) => time >= cue.start && time < cue.end);
+  const progress =
+    playableDuration > 0
+      ? Math.min(100, (time / playableDuration) * 100)
+      : 0;
 
   async function togglePlay() {
     const node = audioRef.current;
@@ -146,56 +239,124 @@ export function LyricAudio({
     }
   }
 
-  return (
-    <div>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+  const player = (
+    <>
+      <div className={`flex flex-wrap items-center gap-3 ${gift ? "" : "mt-4"}`}>
         <button
           type="button"
           onClick={togglePlay}
-          className="rounded-full bg-[var(--copper)] px-5 py-2 text-white"
+          className={
+            gift
+              ? "rounded-full bg-[var(--copper)] px-7 py-3 text-base font-medium text-white shadow-sm"
+              : "rounded-full bg-[var(--copper)] px-5 py-2 text-white"
+          }
         >
-          {playing ? "Pause song" : "Play song"}
+          {playing ? "Pause" : gift ? "Play gift" : "Play song"}
         </button>
-        <p className="text-sm text-[var(--muted)]">{formatTime(time)}</p>
+        <p className="text-sm text-[var(--muted)]">
+          {formatTime(time)}
+          {playableDuration
+            ? ` / ${formatTime(playableDuration)}`
+            : ""}
+        </p>
       </div>
-      <audio ref={audioRef} className="mt-3 w-full" controls src={src} />
-      <p className="mt-2 text-sm text-[var(--muted)]">
-        {listenRequirementHint(listened, duration)}
-      </p>
-      {blocked ? (
-        <p className="mt-2 text-sm text-[var(--copper-dark)]">Press Play song to hear it with the lyrics.</p>
+
+      {gift ? (
+        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
+          <div
+            className="h-full rounded-full bg-[var(--copper)] transition-[width] duration-150"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
       ) : null}
-      <div className="mt-4 max-h-72 overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4">
-        {cues.length ? (
-          cues.map((cue, index) => (
-            <p
-              key={`${cue.start}-${cue.text}`}
-              ref={index === active ? activeRef : undefined}
-              className={
-                index === active
-                  ? "serif py-1 text-lg text-[var(--ink)]"
-                  : "py-1 text-[var(--muted)]"
-              }
-            >
-              {cue.words?.length
-                ? cue.words.map((word) => {
-                    const on = time >= word.start && time < word.end;
-                    return (
-                      <span
-                        key={`${word.start}-${word.text}`}
-                        className={on ? "rounded-sm bg-[var(--copper)]/20 px-0.5 text-[var(--ink)]" : undefined}
-                      >
-                        {word.text}{" "}
-                      </span>
-                    );
-                  })
-                : cue.text}
-            </p>
-          ))
+
+      <audio
+        ref={audioRef}
+        className={gift ? "sr-only" : "mt-3 w-full"}
+        controls={!gift}
+        src={src}
+        preload="metadata"
+        onSeeked={() => {
+          const node = audioRef.current;
+          if (!node || !cap) return;
+          if ((node.currentTime || 0) > cap) {
+            node.currentTime = cap;
+            node.pause();
+          }
+        }}
+      />
+
+      {!gift ? (
+        <p className="mt-2 text-sm text-[var(--muted)]">
+          {listenRequirementHint(listened, playableDuration || mediaDuration)}
+        </p>
+      ) : null}
+
+      {blocked ? (
+        <p className="mt-2 text-sm text-[var(--copper-dark)]">
+          Press {gift ? "Play gift" : "Play song"} to hear it with the lyrics.
+        </p>
+      ) : null}
+
+      <div
+        className={
+          gift
+            ? "mt-5 max-h-80 overflow-y-auto rounded-2xl border border-[var(--line)] bg-[#fffaf4]/90 p-5 shadow-inner"
+            : "mt-4 max-h-72 overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4"
+        }
+      >
+        {gift ? (
+          <p className="mb-3 text-xs uppercase tracking-[0.18em] text-[var(--copper)]">
+            Lyrics
+          </p>
+        ) : null}
+        {fittedCues.length ? (
+          fittedCues.map((cue, index) => {
+            const useWords =
+              Boolean(cue.words?.length) && !wordsLookUnreliable(cue);
+            return (
+              <p
+                key={`${cue.start}-${cue.text}`}
+                ref={index === active ? activeRef : undefined}
+                className={
+                  index === active
+                    ? "serif py-1.5 text-lg text-[var(--ink)]"
+                    : "py-1.5 text-[var(--muted)]"
+                }
+              >
+                {useWords
+                  ? cue.words!.map((word) => {
+                      const on = time >= word.start && time < word.end;
+                      return (
+                        <span
+                          key={`${word.start}-${word.text}`}
+                          className={
+                            on
+                              ? "rounded-sm bg-[var(--copper)]/25 px-0.5 text-[var(--ink)]"
+                              : undefined
+                          }
+                        >
+                          {word.text}{" "}
+                        </span>
+                      );
+                    })
+                  : cue.text}
+              </p>
+            );
+          })
         ) : (
-          <pre className="whitespace-pre-wrap text-[var(--muted)]">{fallbackLyrics}</pre>
+          <pre className="whitespace-pre-wrap text-[var(--muted)]">
+            {fallbackLyrics}
+          </pre>
         )}
       </div>
-    </div>
+    </>
+  );
+
+  if (!gift) return <div>{player}</div>;
+
+  // Gift chrome lives in GiftDeliveryTemplate; keep a soft inner frame when used alone.
+  return (
+    <div className="mt-2">{player}</div>
   );
 }
