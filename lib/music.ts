@@ -7,6 +7,8 @@ import type { SongJob } from "./types";
 
 export { splitSyllables, sungLines } from "./lyric-parse";
 
+export type RenderedAudio = { wav: Buffer; cues: LyricCue[]; mp3?: Buffer };
+
 function hashSeed(input: string) {
   let h = 2166136261;
   for (let i = 0; i < input.length; i += 1) {
@@ -199,7 +201,8 @@ function pickSungLines(
   seconds: number,
   recipientName: string,
 ) {
-  if (seconds > 60 || lines.length <= 8) return lines;
+  // Preview lengths (62–90s) still need chorus/name priority — do not burn time on filler verses.
+  if (seconds > 120 || lines.length <= 8) return lines;
   const name = recipientName.trim().toLowerCase();
   const chosen = new Map<number, (typeof lines)[number]>();
   let verseTaken = 0;
@@ -363,7 +366,17 @@ async function renderWithXaiAndBed(job: SongJob, seconds: number) {
   }
 }
 
-async function renderForJob(job: SongJob, seconds: number) {
+function isElevenLabsPaidPlanError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const lower = message.toLowerCase();
+  return (
+    /\b402\b/.test(message) ||
+    lower.includes("paid_plan_required") ||
+    lower.includes("not available for free")
+  );
+}
+
+async function renderForJob(job: SongJob, seconds: number): Promise<RenderedAudio> {
   const provider = resolveMusicProvider();
   if (provider === "synth") {
     return renderSong(job, seconds);
@@ -376,19 +389,56 @@ async function renderForJob(job: SongJob, seconds: number) {
           "(or set MUSIC_PROVIDER=xai with XAI_API_KEY, or MUSIC_PROVIDER=synth for local formant tests only).",
       );
     }
-    return renderWithElevenLabs(job, seconds);
+    try {
+      return await renderWithElevenLabs(job, seconds);
+    } catch (error) {
+      // Free EL Music returns HTTP 402 paid_plan_required — soft-fallback to xAI when available.
+      if (isElevenLabsPaidPlanError(error) && process.env.XAI_API_KEY) {
+        console.error(
+          "[music] ElevenLabs Music unavailable (paid plan); falling back to xAI.",
+          error instanceof Error ? error.message : error,
+        );
+        return renderWithXaiAndBed(job, seconds);
+      }
+      throw error;
+    }
   }
   return renderWithXaiAndBed(job, seconds);
 }
 
+/** Einstein PERFECT LOCK v2: heartfelt ~70s (floor 60); dense lyrics ≳180 words → 80–90s. */
+export function isHeartfeltOccasion(occasion: string): boolean {
+  return ["birthday", "anniversary", "in-memory", "thank-you", "wedding"].includes(occasion);
+}
+
+export function previewTargetSeconds(job: SongJob): number {
+  const occasion = job.occasion || "";
+  const heartfelt =
+    isHeartfeltOccasion(occasion) || job.genre === "lullaby" || occasion === "bedtime";
+  if (!heartfelt) {
+    // Non-heartfelt still retire ~50s race; give ballad room at 62s floor band.
+    return 62;
+  }
+  const words = (job.lyrics || "").trim().split(/\s+/).filter(Boolean).length;
+  if (words >= 180) return 85; // dense 80–90 band
+  return 70; // default heartfelt
+}
+
 export async function writePreviewAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 45);
-  await writeAudio(job.id, "preview", wav);
-  return cues;
+  const seconds = previewTargetSeconds(job);
+  const rendered = await renderForJob(job, seconds);
+  await writeAudio(job.id, "preview", rendered.wav, "wav");
+  if (rendered.mp3 && rendered.mp3.byteLength > 0) {
+    await writeAudio(job.id, "preview", rendered.mp3, "mp3");
+  }
+  return rendered.cues;
 }
 
 export async function writeFullAudio(job: SongJob) {
-  const { wav, cues } = await renderForJob(job, 135);
-  await writeAudio(job.id, "full", wav);
-  return cues;
+  const rendered = await renderForJob(job, 135);
+  await writeAudio(job.id, "full", rendered.wav, "wav");
+  if (rendered.mp3 && rendered.mp3.byteLength > 0) {
+    await writeAudio(job.id, "full", rendered.mp3, "mp3");
+  }
+  return rendered.cues;
 }
