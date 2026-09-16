@@ -3,9 +3,19 @@ import { appUrl } from "@/lib/whop";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const base = appUrl();
-  return ["", "/create", "/privacy", "/terms", "/refunds"].map((path) => ({
+  const lastModified = new Date("2026-09-16");
+  const paths: { path: string; priority: number }[] = [
+    { path: "", priority: 1 },
+    { path: "/create", priority: 0.9 },
+    { path: "/birthday", priority: 0.8 },
+    { path: "/privacy", priority: 0.4 },
+    { path: "/terms", priority: 0.4 },
+    { path: "/refunds", priority: 0.4 },
+  ];
+  return paths.map(({ path, priority }) => ({
     url: `${base}${path || "/"}`,
-    changeFrequency: "weekly",
-    priority: path === "" ? 1 : 0.6,
+    lastModified,
+    changeFrequency: "weekly" as const,
+    priority,
   }));
 }

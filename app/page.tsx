@@ -3,7 +3,13 @@ import Link from "next/link";
 import { brand } from "@/lib/brand";
 import { SiteFooter, SiteHeader } from "@/components/SiteChrome";
 
-const moments = [
+const moments: {
+  title: string;
+  body: string;
+  image: string;
+  alt: string;
+  href?: string;
+}[] = [
   {
     title: "A kitchen dance",
     body: "Their name in the chorus. The little Sunday habits in verse two. A song for the ordinary days that matter.",
@@ -27,6 +33,7 @@ const moments = [
     body: "Candles go out. A birthday song with their name in it stays.",
     image: "/brand/mood-birthday.png",
     alt: "Family at a kids birthday table with cake",
+    href: "/birthday",
   },
   {
     title: "A day worth a song",
@@ -88,26 +95,39 @@ export default function Home() {
             moment.
           </p>
           <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {moments.map((moment) => (
-              <article
-                key={moment.title}
-                className="overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--card)]"
-              >
-                <div className="relative aspect-[4/3]">
-                  <Image
-                    src={moment.image}
-                    alt={moment.alt}
-                    fill
-                    className="object-cover"
-                    sizes="(max-width: 768px) 100vw, 33vw"
-                  />
-                </div>
-                <div className="p-6">
-                  <h3 className="serif text-2xl">{moment.title}</h3>
-                  <p className="mt-3 text-[var(--muted)]">{moment.body}</p>
-                </div>
-              </article>
-            ))}
+            {moments.map((moment) => {
+              const inner = (
+                <>
+                  <div className="relative aspect-[4/3]">
+                    <Image
+                      src={moment.image}
+                      alt={moment.alt}
+                      fill
+                      className="object-cover"
+                      sizes="(max-width: 768px) 100vw, 33vw"
+                    />
+                  </div>
+                  <div className="p-6">
+                    <h3 className="serif text-2xl">{moment.title}</h3>
+                    <p className="mt-3 text-[var(--muted)]">{moment.body}</p>
+                  </div>
+                </>
+              );
+              return (
+                <article
+                  key={moment.title}
+                  className="overflow-hidden rounded-3xl border border-[var(--line)] bg-[var(--card)]"
+                >
+                  {moment.href ? (
+                    <Link href={moment.href} className="block hover:opacity-95">
+                      {inner}
+                    </Link>
+                  ) : (
+                    inner
+                  )}
+                </article>
+              );
+            })}
           </div>
         </section>
 
@@ -140,7 +160,7 @@ export default function Home() {
           <h2 className="serif text-4xl">Start from the occasion</h2>
           <div className="mt-6 flex flex-wrap gap-3">
             {[
-              ["birthday", "Birthdays"],
+              ["/birthday", "Birthdays"],
               ["anniversary", "Anniversaries"],
               ["wedding", "Weddings"],
               ["bedtime", "Kids / bedtime"],
@@ -148,7 +168,7 @@ export default function Home() {
             ].map(([id, label]) => (
               <Link
                 key={id}
-                href={`/create?occasion=${id}`}
+                href={id.startsWith("/") ? id : `/create?occasion=${id}`}
                 className="rounded-full border border-[var(--line)] bg-[var(--card)] px-4 py-2 hover:border-[var(--copper)]"
               >
                 {label}

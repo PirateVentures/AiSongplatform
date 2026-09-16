@@ -48,6 +48,9 @@ export default async function CreatePage({
     <div>
       <SiteHeader />
       <main className="px-5 py-8 md:px-10">
+        <p className="mb-1 text-center text-sm font-medium text-[var(--ink)]">
+          Create a personalized song gift
+        </p>
         <p className="mb-4 text-center text-sm text-[var(--muted)]">
           {brand.tagline} Free preview. From ${brand.songPrice}.
         </p>
