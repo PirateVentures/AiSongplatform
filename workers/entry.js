@@ -266,15 +266,13 @@ async function tryServeAudio(request, env) {
     });
   }
 
-  // Joseph ONE-master / dual-asset P0: paid+fullReady → default serves FULL
-  // (same master as ?full=1). Never leave stale preview as default after promote.
-  const kind =
-    job.paidAt && job.fullReady
-      ? "full"
-      : wantFull && job.fullReady
-        ? "full"
-        : "preview";
-  if (kind === "preview" && !job.previewReady) {
+  // P0 2026-09-15 Chris/Joseph: /preview must play ~45s fast.
+  // Same-master: load FULL KV when present (preview KV may be deleted after promote),
+  // then hard-cap unless ?full=1. Never return uncapped 120s/2.8MB on preview page.
+  let kind = "preview";
+  if (job.fullReady) {
+    kind = "full";
+  } else if (!job.previewReady) {
     return new Response(JSON.stringify({ error: "Preview is not ready yet." }), {
       status: 409,
       headers: { "Content-Type": "application/json", "X-Audio-Fastpath": "1" },
@@ -332,14 +330,14 @@ async function tryServeAudio(request, env) {
     });
   }
 
-  // Unpaid preview ONLY: hard 45s clock (Xing-honest). Paid full never enters kind===preview.
-  if (kind === "preview") {
+  // Hard-cap to ~45s unless explicit paid ?full=1 (gift /song page).
+  if (!wantFull) {
     if (contentType.includes("mpeg") || contentType.includes("mp3")) {
       bytes = hardCapPreviewMp3(bytes, PREVIEW_MAX_SECONDS);
     }
   }
 
-  const filename = `${(job.recipientName || "songsnuggle")}-${kind}.${ext}`.replace(
+  const filename = `${(job.recipientName || "songsnuggle")}-${wantFull ? "full" : "preview"}.${ext}`.replace(
     /[^\w.-]+/g,
     "-",
   );

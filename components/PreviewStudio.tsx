@@ -254,7 +254,7 @@ export function PreviewStudio({ id }: { id: string }) {
             </button>
             {!listened ? (
               <p className="mt-2 text-xs text-[var(--muted)]">
-                Checkout stays locked until the preview actually plays (not just loads).
+                Press Play song and listen for a few seconds — then checkout opens.
               </p>
             ) : null}
           </>

@@ -347,7 +347,7 @@ export function LyricAudio({
               : "rounded-full bg-[var(--copper)] px-5 py-2 text-white disabled:opacity-50"
           }
         >
-          {buffering ? "Loading…" : playing ? "Pause" : gift ? "Play gift" : "Play song"}
+          {buffering ? "Loading…" : playing ? "Pause" : gift ? "Play your song" : "Play song"}
         </button>
         <p className="text-sm text-[var(--muted)]">
           {formatTime(time)}
@@ -416,7 +416,7 @@ export function LyricAudio({
 
       {blocked ? (
         <p className="mt-2 text-sm text-[var(--copper-dark)]">
-          Press {gift ? "Play gift" : "Play song"} to hear it with the lyrics.
+          Press {gift ? "Play your song" : "Play song"} to hear it with the lyrics.
         </p>
       ) : null}
 

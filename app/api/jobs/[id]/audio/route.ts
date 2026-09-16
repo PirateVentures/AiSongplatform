@@ -109,18 +109,11 @@ export async function GET(
     return NextResponse.json({ error: "Full song unlocks after payment." }, { status: 402 });
   }
 
-  // Joseph ONE-master / dual-asset P0: paid+fullReady → default /audio serves FULL
-  // (same master as ?full=1). Never leave 85s preview as default after promote.
-  const kind =
-    job.paidAt && job.fullReady
-      ? "full"
-      : wantFull && job.fullReady
-        ? "full"
-        : "preview";
-  if (wantFull && !(job.paidAt && job.fullReady) && !job.fullReady) {
-    // keep 402 already handled above for wantFull && !paidAt
-  }
-  if (kind === "preview" && !job.previewReady) {
+  // P0: load same-master full bytes when available; hard-cap unless ?full=1.
+  let kind: "preview" | "full" = "preview";
+  if (job.fullReady) {
+    kind = "full";
+  } else if (!job.previewReady) {
     return NextResponse.json({ error: "Preview is not ready yet." }, { status: 409 });
   }
 
@@ -183,9 +176,8 @@ export async function GET(
       return NextResponse.json({ error: "Audio file missing." }, { status: 404 });
     }
 
-    // Unpaid preview: always hard-cap to PREVIEW_MAX_SECONDS (one clock = 45s).
-    // Paid full never uses kind===preview. Do not let stored 70–120s leak into scrubber.
-    if (kind === "preview") {
+    // Always hard-cap to 45s unless ?full=1.
+    if (!wantFull) {
       bytes = capPreviewBytes(bytes, contentType, PREVIEW_MAX_SECONDS);
     }
 
