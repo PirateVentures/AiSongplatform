@@ -3,6 +3,7 @@ import type { LyricCue } from "@/lib/cues";
 import { cueSpanEnd, rescaleCuesToDuration, cuesNeedRescale } from "@/lib/cues";
 import { getJob, publicJob, readAudio, updateJob } from "@/lib/store";
 import { cuesWithSungWordsOnly, lyricsFromSungCues } from "@/lib/lyric-parse";
+import { lintLyricCues, lintLyricText } from "@/lib/lyric-lint";
 import { resolveEncodedFullDurationSec } from "@/lib/true-duration";
 import { syncPreviewFromFullMaster, previewTargetSeconds } from "@/lib/music";
 import {
@@ -86,7 +87,15 @@ export async function POST(
   }
 
   cues = cuesWithSungWordsOnly(cues);
-  const sungLyrics = cues.length ? lyricsFromSungCues(cues) : job.lyrics;
+  {
+    const linted = lintLyricCues(cues);
+    if (linted.fixes.length) cues = linted.cues;
+  }
+  let sungLyrics = cues.length ? lyricsFromSungCues(cues) : job.lyrics;
+  {
+    const linted = lintLyricText(sungLyrics || "");
+    if (linted.fixes.length) sungLyrics = linted.text;
+  }
 
   const masterFingerprint = audioHeadFingerprint(fullBytes);
   const masterSourceId = newMasterSourceId(id, masterFingerprint);

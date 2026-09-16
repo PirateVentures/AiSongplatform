@@ -1,5 +1,6 @@
 import { sendDeliveryEmail } from "./email";
 import { cuesWithSungWordsOnly, lyricsFromSungCues } from "./lyric-parse";
+import { lintLyricCues, lintLyricText } from "./lyric-lint";
 import { writeFullAudio } from "./music";
 import { getJob, updateJob } from "./store";
 import type { SongJob } from "./types";
@@ -20,8 +21,16 @@ export async function fulfillPaidJob(job: SongJob, paymentId: string | null) {
     masterSourceId,
     masterFingerprint,
   } = await writeFullAudio(job);
-  const cues = cuesWithSungWordsOnly(rawCues.length ? rawCues : job.lyricCues || []);
-  const sungLyrics = cues.length ? lyricsFromSungCues(cues) : job.lyrics;
+  let cues = cuesWithSungWordsOnly(rawCues.length ? rawCues : job.lyricCues || []);
+  {
+    const linted = lintLyricCues(cues);
+    if (linted.fixes.length) cues = linted.cues;
+  }
+  let sungLyrics = cues.length ? lyricsFromSungCues(cues) : job.lyrics;
+  {
+    const linted = lintLyricText(sungLyrics || "");
+    if (linted.fixes.length) sungLyrics = linted.text;
+  }
   const next = await updateJob(job.id, {
     paidAt: new Date().toISOString(),
     fullReady: true,

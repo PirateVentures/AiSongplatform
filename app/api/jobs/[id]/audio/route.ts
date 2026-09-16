@@ -183,15 +183,10 @@ export async function GET(
       return NextResponse.json({ error: "Audio file missing." }, { status: 404 });
     }
 
-    // Unpaid preview: MUSIC BAR heartfelt may exceed 45s marketing copy (Einstein G).
-    // Cap to stored audioDurationSec when ≥60; else legacy 45s.
+    // Unpaid preview: always hard-cap to PREVIEW_MAX_SECONDS (one clock = 45s).
+    // Paid full never uses kind===preview. Do not let stored 70–120s leak into scrubber.
     if (kind === "preview") {
-      const stored = job.audioDurationSec;
-      const capSec =
-        typeof stored === "number" && stored >= 60
-          ? Math.min(stored, 90)
-          : PREVIEW_MAX_SECONDS;
-      bytes = capPreviewBytes(bytes, contentType, capSec);
+      bytes = capPreviewBytes(bytes, contentType, PREVIEW_MAX_SECONDS);
     }
 
     const filename = `${job.recipientName || brand.fileSlug}-${kind}.${ext}`.replace(

@@ -56,9 +56,12 @@ export function SiteFooter() {
           <a href={`mailto:${brand.supportEmail}`}>{brand.supportEmail}</a>
         </p>
       </div>
-      <p className="mt-3 max-w-3xl text-xs leading-5">
-        Songs are made with AI from the details you share. You review the lyrics before we make
-        the preview.
+      <p className="mt-3 max-w-3xl text-xs leading-5 text-[var(--muted)]">
+        Personalized songs are created with AI tools from the details you share. See{" "}
+        <Link href="/terms" className="underline decoration-[var(--line)] underline-offset-2 hover:text-[var(--ink)]">
+          Terms
+        </Link>{" "}
+        for details. You review the lyrics before we make the preview.
       </p>
     </footer>
   );

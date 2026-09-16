@@ -99,13 +99,135 @@ function buildAudioResponse(bytes, contentType, request, extra = {}) {
   });
 }
 
-/** Byte-truncate MP3 by duration ratio (Xing rewrite deferred — prefer full preview MP3). */
-function roughCapMp3(bytes, maxSeconds) {
+function skipId3(bytes) {
+  if (bytes.byteLength >= 10 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
+    const size =
+      ((bytes[6] & 0x7f) << 21) |
+      ((bytes[7] & 0x7f) << 14) |
+      ((bytes[8] & 0x7f) << 7) |
+      (bytes[9] & 0x7f);
+    return 10 + size;
+  }
+  return 0;
+}
+
+function findMpegFrame(bytes, from = 0) {
+  for (let i = from; i + 4 < bytes.byteLength; i += 1) {
+    if (bytes[i] === 0xff && (bytes[i + 1] & 0xe0) === 0xe0) return i;
+  }
+  return -1;
+}
+
+function readMp3DurationSeconds(bytes) {
+  const start = skipId3(bytes);
+  const frame = findMpegFrame(bytes, start);
+  if (frame < 0) return null;
+  const versionBits = (bytes[frame + 1] >> 3) & 0x03;
+  const layerBits = (bytes[frame + 1] >> 1) & 0x03;
+  if (layerBits !== 1) return null;
+  const srTable = [
+    [11025, 12000, 8000],
+    [0, 0, 0],
+    [22050, 24000, 16000],
+    [44100, 48000, 32000],
+  ];
+  const srIndex = (bytes[frame + 2] >> 2) & 0x03;
+  const sampleRate = srTable[versionBits]?.[srIndex] || 0;
+  if (!sampleRate) return null;
+  const samplesPerFrame = versionBits === 3 ? 1152 : 576;
+  const channelMode = (bytes[frame + 3] >> 6) & 0x03;
+  const mono = channelMode === 3;
+  const side = versionBits === 3 ? (mono ? 17 : 32) : mono ? 9 : 17;
+  const xingAt = frame + 4 + side;
+  if (xingAt + 12 >= bytes.byteLength) return null;
+  const tag = String.fromCharCode(
+    bytes[xingAt],
+    bytes[xingAt + 1],
+    bytes[xingAt + 2],
+    bytes[xingAt + 3],
+  );
+  if (tag !== "Xing" && tag !== "Info") return null;
+  const flags =
+    (bytes[xingAt + 4] << 24) |
+    (bytes[xingAt + 5] << 16) |
+    (bytes[xingAt + 6] << 8) |
+    bytes[xingAt + 7];
+  if ((flags & 0x0001) === 0) return null;
+  const frames =
+    (bytes[xingAt + 8] << 24) |
+    (bytes[xingAt + 9] << 16) |
+    (bytes[xingAt + 10] << 8) |
+    bytes[xingAt + 11];
+  if (!frames) return null;
+  return (frames * samplesPerFrame) / sampleRate;
+}
+
+function rewriteXingForTruncatedPreview(bytes, originalDuration, maxSeconds) {
+  const start = skipId3(bytes);
+  const frame = findMpegFrame(bytes, start);
+  if (frame < 0) return bytes;
+  const versionBits = (bytes[frame + 1] >> 3) & 0x03;
+  const layerBits = (bytes[frame + 1] >> 1) & 0x03;
+  if (layerBits !== 1) return bytes;
+  const channelMode = (bytes[frame + 3] >> 6) & 0x03;
+  const mono = channelMode === 3;
+  const side = versionBits === 3 ? (mono ? 17 : 32) : mono ? 9 : 17;
+  const xingAt = frame + 4 + side;
+  if (xingAt + 12 >= bytes.byteLength) return bytes;
+  const tag = String.fromCharCode(
+    bytes[xingAt],
+    bytes[xingAt + 1],
+    bytes[xingAt + 2],
+    bytes[xingAt + 3],
+  );
+  if (tag !== "Xing" && tag !== "Info") return bytes;
+  const flags =
+    (bytes[xingAt + 4] << 24) |
+    (bytes[xingAt + 5] << 16) |
+    (bytes[xingAt + 6] << 8) |
+    bytes[xingAt + 7];
+  const out = new Uint8Array(bytes);
+  const ratio =
+    originalDuration && originalDuration > 0
+      ? Math.min(1, maxSeconds / originalDuration)
+      : bytes.byteLength / Math.max(bytes.byteLength, 1);
+  let cursor = xingAt + 8;
+  if (flags & 0x0001) {
+    const oldFrames =
+      (out[cursor] << 24) | (out[cursor + 1] << 16) | (out[cursor + 2] << 8) | out[cursor + 3];
+    const newFrames = Math.max(1, Math.floor(oldFrames * ratio));
+    out[cursor] = (newFrames >>> 24) & 0xff;
+    out[cursor + 1] = (newFrames >>> 16) & 0xff;
+    out[cursor + 2] = (newFrames >>> 8) & 0xff;
+    out[cursor + 3] = newFrames & 0xff;
+    cursor += 4;
+  }
+  if (flags & 0x0002) {
+    const newBytes = out.byteLength;
+    out[cursor] = (newBytes >>> 24) & 0xff;
+    out[cursor + 1] = (newBytes >>> 16) & 0xff;
+    out[cursor + 2] = (newBytes >>> 8) & 0xff;
+    out[cursor + 3] = newBytes & 0xff;
+  }
+  return out;
+}
+
+/** Hard-cap unpaid preview MP3 to maxSeconds; rewrite Xing so scrubber matches body. */
+function hardCapPreviewMp3(bytes, maxSeconds) {
   if (!bytes || maxSeconds <= 0 || bytes.byteLength < 4096) return bytes;
-  // ~180kbps average; only cut if clearly longer than cap.
-  const maxBytes = Math.floor((180_000 * maxSeconds) / 8) + 65_536;
-  if (bytes.byteLength <= maxBytes) return bytes;
-  return bytes.subarray(0, maxBytes);
+  const duration = readMp3DurationSeconds(bytes);
+  let cut = null;
+  if (duration && duration > maxSeconds + 0.5) {
+    const keep = Math.floor(bytes.byteLength * (maxSeconds / duration));
+    cut = bytes.subarray(0, Math.max(keep, 4096));
+  } else if (duration && duration <= maxSeconds + 0.5) {
+    return bytes;
+  } else {
+    const maxBytes = Math.floor((180_000 * maxSeconds) / 8) + 65_536;
+    if (bytes.byteLength <= maxBytes) return bytes;
+    cut = bytes.subarray(0, maxBytes);
+  }
+  return rewriteXingForTruncatedPreview(cut, duration, maxSeconds);
 }
 
 async function tryServeAudio(request, env) {
@@ -210,16 +332,10 @@ async function tryServeAudio(request, env) {
     });
   }
 
-  if (kind === "preview" && contentType.includes("mpeg")) {
-    const stored = job.audioDurationSec;
-    const capSec =
-      typeof stored === "number" && stored >= 60
-        ? Math.min(stored, 90)
-        : PREVIEW_MAX_SECONDS;
-    // Only rough-cap when stored duration says we are over marketing cap and
-    // the object is clearly longer; MUSIC BAR (≥60s) keeps full body.
-    if (!(typeof stored === "number" && stored >= 60)) {
-      bytes = roughCapMp3(bytes, capSec);
+  // Unpaid preview ONLY: hard 45s clock (Xing-honest). Paid full never enters kind===preview.
+  if (kind === "preview") {
+    if (contentType.includes("mpeg") || contentType.includes("mp3")) {
+      bytes = hardCapPreviewMp3(bytes, PREVIEW_MAX_SECONDS);
     }
   }
 

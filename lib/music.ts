@@ -501,10 +501,26 @@ export async function writePreviewAudio(job: SongJob): Promise<{
   const duration = audioDurationSec > 1 ? audioDurationSec : seconds;
 
   const { cuesWithSungWordsOnly, lyricsFromSungCues } = await import("./lyric-parse");
+  const { lintLyricCues, lintLyricText } = await import("./lyric-lint");
   // Drop unsung cue shells (zero word stamps) — paid fc06 Mayan/high-road RCA.
   cues = cuesWithSungWordsOnly(cues);
+  // let→led (and similar) before display/publish.
+  {
+    const lintedCues = lintLyricCues(cues);
+    if (lintedCues.fixes.length) {
+      console.info("[music] lyric lint fixes", lintedCues.fixes);
+      cues = lintedCues.cues;
+    }
+  }
   // Align display to what was sung; never keep unsung script lines on-screen.
-  const sungLyrics = cues.length ? lyricsFromSungCues(cues) : (job.lyrics || "");
+  let sungLyrics = cues.length ? lyricsFromSungCues(cues) : (job.lyrics || "");
+  {
+    const linted = lintLyricText(sungLyrics);
+    if (linted.fixes.length) {
+      console.info("[music] lyric text lint fixes", linted.fixes);
+      sungLyrics = linted.text;
+    }
+  }
   const jobForGate = { ...job, lyrics: sungLyrics };
 
   const provider = rendered.provider || "unknown";
@@ -635,9 +651,8 @@ export async function writeFullAudio(job: SongJob) {
   );
   const parallelFullRecompose = Boolean(priorPreview?.byteLength) && !related.ok;
 
-  // Always overwrite preview from THIS full master (cap) — clears dual-take.
-  const capSec = Math.max(previewTargetSeconds(job), PREVIEW_MAX_SECONDS);
-  await syncPreviewFromFullMaster(job.id, rendered.wav, fullMp3, capSec);
+  // Always overwrite preview from THIS full master at HARD 45s — one free clock.
+  await syncPreviewFromFullMaster(job.id, rendered.wav, fullMp3, PREVIEW_MAX_SECONDS);
 
   const masterFingerprint = audioHeadFingerprint(new Uint8Array(rendered.wav));
   const masterSourceId = newMasterSourceId(job.id, masterFingerprint);
@@ -672,8 +687,14 @@ export async function writeFullAudio(job: SongJob) {
       }
     }
     // Never ship unsung cue shells on paid full (fc06: Mayan / high-road).
-    const { cuesWithSungWordsOnly } = await import("./lyric-parse");
+    const { cuesWithSungWordsOnly, lyricsFromSungCues } = await import("./lyric-parse");
+    const { lintLyricCues, lintLyricText } = await import("./lyric-lint");
     cues = cuesWithSungWordsOnly(cues);
+    const lintedCues = lintLyricCues(cues);
+    if (lintedCues.fixes.length) {
+      console.info("[music:full] lyric lint fixes", lintedCues.fixes);
+      cues = lintedCues.cues;
+    }
   } catch (error) {
     console.error("[music] cue rescale after full write failed", error);
   }

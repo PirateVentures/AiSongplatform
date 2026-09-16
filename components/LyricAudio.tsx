@@ -366,10 +366,35 @@ export function LyricAudio({
         </div>
       ) : null}
 
+      {/* Preview: one clock — custom scrubber maxed at cap; hide native controls (they show full master). */}
+      {cap && !gift ? (
+        <input
+          type="range"
+          min={0}
+          max={playableDuration || cap}
+          step={0.05}
+          value={Math.min(time, playableDuration || cap)}
+          aria-label="Preview position"
+          className="mt-3 w-full accent-[var(--copper)]"
+          onChange={(event) => {
+            const node = audioRef.current;
+            if (!node) return;
+            const next = Math.min(Number(event.target.value), cap);
+            try {
+              node.currentTime = next;
+            } catch {
+              /* ignore */
+            }
+            setTime(next);
+            lastTickRef.current = next;
+          }}
+        />
+      ) : null}
+
       <audio
         ref={audioRef}
-        className={gift ? "sr-only" : "mt-3 w-full"}
-        controls={!gift}
+        className={gift || cap ? "sr-only" : "mt-3 w-full"}
+        controls={!gift && !cap}
         src={playSrc || undefined}
         preload="auto"
         playsInline

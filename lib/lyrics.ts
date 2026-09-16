@@ -105,16 +105,14 @@ function lyricPrompt(job: SongJob, options?: { fresh?: boolean }) {
         (/[-–—]/.test(guide) ||
           /\b(mah|muh|lee)\b/i.test(guide) ||
           guide.length > 18);
-      const sung =
-        /^maliya\b/i.test(first) || (mushy && /^mali/i.test(first))
-          ? "Malia"
-          : first || written || "the written name";
+      // ALWAYS spell lyrics with the written gift-card name — never pronunciation.
+      const sung = first || written || "the written name";
       const lines = [
         `Spell the sung name in every lyric line as: ${sung} (clear gift spelling — never hyphenated phonetics).`,
       ];
-      if (guide && !mushy) {
+      if (guide && !mushy && guide.toLowerCase() !== written.toLowerCase()) {
         lines.push(
-          `How to pronounce when singing (guide only — do NOT put this phonetic spelling in the lyrics): ${guide}`,
+          `How to pronounce when singing (guide only — do NOT put this phonetic spelling in the lyrics or titles): ${guide}`,
         );
       } else if (mushy) {
         lines.push(

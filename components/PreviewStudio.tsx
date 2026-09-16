@@ -232,12 +232,17 @@ export function PreviewStudio({ id }: { id: string }) {
               fallbackLyrics={job.lyrics}
               autoPlay={playWhenReady}
               maxPlaySeconds={PREVIEW_MAX_SECONDS}
-              encodedDurationSec={job.audioDurationSec}
+              encodedDurationSec={Math.min(
+                typeof job.audioDurationSec === "number" && job.audioDurationSec > 0
+                  ? job.audioDurationSec
+                  : PREVIEW_MAX_SECONDS,
+                PREVIEW_MAX_SECONDS,
+              )}
               onListenProgress={onListenProgress}
             />
             <p className="mt-3 text-sm text-[var(--muted)]">
-              Free {PREVIEW_MAX_SECONDS}-second preview with lyrics on screen. This is
-              original generated music, not a studio recording artist.
+              Free {PREVIEW_MAX_SECONDS}-second preview with lyrics on screen. Unlock
+              the full song after you listen.
             </p>
             <button
               type="button"

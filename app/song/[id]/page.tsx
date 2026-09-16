@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { GiftCardPrint } from "@/components/GiftCardPrint";
 import { GiftDeliveryTemplate } from "@/components/GiftDeliveryTemplate";
@@ -10,6 +11,36 @@ import {
 import { readAudio, getJob, publicJob, updateJob } from "@/lib/store";
 import { cuesWithSungWordsOnly, lyricsFromSungCues } from "@/lib/lyric-parse";
 import { resolveEncodedFullDurationSec } from "@/lib/true-duration";
+import { giftDisplayTitle, writtenDisplayName } from "@/lib/display-name";
+import { brand } from "@/lib/brand";
+
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ id: string }>;
+}): Promise<Metadata> {
+  const { id } = await params;
+  const job = await getJob(id);
+  if (!job) return { title: brand.name };
+  const written = writtenDisplayName(job);
+  const title = giftDisplayTitle(job);
+  const description = `A SongSnuggle gift for ${written}. Private listening page.`;
+  return {
+    title: `${title} · ${brand.name}`,
+    description,
+    openGraph: {
+      title: `${title} · ${brand.name}`,
+      description,
+      type: "website",
+    },
+    twitter: {
+      card: "summary",
+      title: `${title} · ${brand.name}`,
+      description,
+    },
+  };
+}
 
 export default async function SongPage({
   params,
@@ -95,11 +126,10 @@ export default async function SongPage({
               Private listening page
             </p>
             <h1 className="serif mt-3 text-4xl">
-              {(job.songTitle || "").trim() ||
-                (job.recipientName ? `For ${job.recipientName}` : "Your song")}
+              {giftDisplayTitle(job)}
             </h1>
             <p className="mt-2 text-[var(--muted)]">
-              Made for {job.recipientName}
+              Made for {writtenDisplayName(job)}
               {job.senderName.trim() ? <> · From {job.senderName.trim()}</> : null}
             </p>
             <p className="mt-6 text-[var(--muted)]">

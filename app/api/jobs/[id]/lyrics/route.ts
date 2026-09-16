@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateLyrics } from "@/lib/lyrics";
+import { lintLyricText } from "@/lib/lyric-lint";
 import { getJob, publicJob, updateJob } from "@/lib/store";
 
 export async function POST(
@@ -34,6 +35,12 @@ export async function POST(
         error instanceof Error ? error.message : "Could not generate lyrics.";
       return NextResponse.json({ error: message }, { status: 502 });
     }
+  }
+
+  const linted = lintLyricText(lyrics);
+  if (linted.fixes.length) {
+    console.info("[lyrics] lint fixes", { id, fixes: linted.fixes });
+    lyrics = linted.text;
   }
 
   const next = await updateJob(id, {

@@ -28,8 +28,8 @@ export function GiftDeliveryTemplate({
   qrPrintSlot?: ReactNode;
 }) {
   const from = (job.senderName || "").trim();
+  // Written gift-card name only — pronunciation is sing-only, never display chrome.
   const written = (job.recipientName || "").trim();
-  const pronunciation = (job.namePronunciation || "").trim();
   const displayTitle =
     (job.songTitle || "").trim() ||
     (written ? `For ${written}` : "Your song");
@@ -46,11 +46,6 @@ export function GiftDeliveryTemplate({
             Made for <span className="text-[var(--ink)]">{written || "someone special"}</span>
             {from ? <> · From {from}</> : null}
           </p>
-          {pronunciation ? (
-            <p className="mt-1 text-sm">
-              Said like <span className="italic text-[var(--ink)]">{pronunciation}</span>
-            </p>
-          ) : null}
         </div>
         <p className="pt-1 text-[var(--muted)]">
           A keepsake in its own space — play below, read the lyrics, download the MP3
