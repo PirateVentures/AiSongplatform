@@ -26,6 +26,7 @@
     "prove:gate-cannot-lie": "tsx --tsconfig tsconfig.json scripts/prove-gate-cannot-lie.ts"
   },
   "dependencies": {
+    "@breezystack/lamejs": "^1.2.7",
     "@cloudflare/workers-types": "^5.20260908.1",
     "@opennextjs/cloudflare": "^1.20.6",
     "@whop/checkout": "^0.6.0",

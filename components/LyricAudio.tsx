@@ -94,6 +94,7 @@ export function LyricAudio({
 
   const [playSrc, setPlaySrc] = useState("");
   const [buffering, setBuffering] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const objectUrlRef = useRef<string | null>(null);
   const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resumeAtRef = useRef(0);
@@ -127,17 +128,50 @@ export function LyricAudio({
     const isWebKit =
       /AppleWebKit/i.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/i.test(ua);
     const isPreviewCap = typeof maxPlaySeconds === "number" && maxPlaySeconds > 0;
-    // Safari preview OR any preview-cap path: stay on Range src.
-    if (isWebKit || isPreviewCap) {
-      return () => {
-        cancelled = true;
-        if (objectUrlRef.current) {
-          URL.revokeObjectURL(objectUrlRef.current);
-          objectUrlRef.current = null;
+    setLoadError(null);
+
+    const fallbackSrc = (() => {
+      try {
+        const u = new URL(abs);
+        if (u.searchParams.get("format") === "mp3") {
+          u.searchParams.delete("format");
+          return `${u.pathname}${u.search}`;
         }
-      };
-    }
+      } catch {
+        /* ignore */
+      }
+      return null;
+    })();
+
     (async () => {
+      try {
+        const probe = await fetch(abs, {
+          method: "GET",
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { Accept: "audio/mpeg,audio/*,*/*", Range: "bytes=0-1" },
+        });
+        if (cancelled) return;
+        if (probe.status === 404 || probe.status === 415) {
+          if (fallbackSrc) {
+            setLoadError("Preview MP3 missing — trying alternate audio.");
+            setPlaySrc(fallbackSrc);
+            return;
+          }
+          setLoadError("Audio unavailable (MP3 missing). Try Create preview again.");
+          return;
+        }
+        if (!probe.ok && probe.status !== 206) {
+          setLoadError(`Audio failed to load (${probe.status}).`);
+          return;
+        }
+      } catch {
+        /* keep src */
+      }
+
+      // Safari preview OR any preview-cap path: stay on Range src (after mp3 probe).
+      if (isWebKit || isPreviewCap) return;
+
       try {
         const res = await fetch(abs, {
           credentials: "same-origin",
@@ -421,6 +455,12 @@ export function LyricAudio({
           }
         }}
       />
+
+      {loadError ? (
+        <p className="mt-2 text-sm text-amber-800" role="alert">
+          {loadError}
+        </p>
+      ) : null}
 
       {!gift ? (
         <p className="mt-2 text-sm text-[var(--muted)]">
