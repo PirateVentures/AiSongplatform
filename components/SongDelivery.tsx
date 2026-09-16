@@ -28,7 +28,7 @@ export function SongDelivery({ job }: { job: PublicSongJob }) {
   const wavHref = `/api/jobs/${job.id}/audio?full=1&format=wav&download=1`;
 
   return (
-    <div className="mt-8 space-y-4">
+    <div className="space-y-4">
       <div className="rounded-3xl border border-[var(--line)] bg-white/70 p-5">
         <p className="text-sm uppercase tracking-[0.18em] text-[var(--copper)]">Keep it</p>
         <p className="mt-2 text-[var(--muted)]">

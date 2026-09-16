@@ -111,7 +111,13 @@ export default async function SongPage({
   return (
     <div>
       <SiteHeader />
-      <main className="mx-auto max-w-2xl px-5 py-10">
+      <main
+        className={
+          unlocked
+            ? "mx-auto max-w-5xl px-5 py-10"
+            : "mx-auto max-w-2xl px-5 py-10"
+        }
+      >
         {unlocked ? (
           <GiftDeliveryTemplate
             job={pub}

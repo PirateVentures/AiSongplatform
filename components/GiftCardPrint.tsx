@@ -5,13 +5,15 @@ import { GIFT_CARD_QR_ID } from "@/lib/gift-card-id";
 import type { PublicSongJob } from "@/lib/types";
 
 /**
- * Printable gift card hook for GiftDeliveryTemplate.qrPrintSlot.
+ * Printable / shareable gift card for GiftDeliveryTemplate.qrPrintSlot.
  * Photo (optional) + message + QR deep-link — linen / forest / copper.
+ * Mobile: primary Share gift card action (Web Share API with PNG when available).
  */
 export function GiftCardPrint({ job }: { job: PublicSongJob }) {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [previewBust, setPreviewBust] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState(false);
   const [note, setNote] = useState("");
   const unlockPath = `/song/${job.id}`;
   const pdfHref = `/api/jobs/${job.id}/gift-card.pdf`;
@@ -74,6 +76,72 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
     [job.id],
   );
 
+  const copyPrivateLink = useCallback(async () => {
+    const url = typeof window !== "undefined" ? window.location.href : unlockPath;
+    try {
+      await navigator.clipboard.writeText(url);
+    } catch {
+      const input = document.createElement("input");
+      input.value = url;
+      input.setAttribute("readonly", "true");
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand("copy");
+      input.remove();
+    }
+  }, [unlockPath]);
+
+  const shareGiftCard = useCallback(async () => {
+    setSharing(true);
+    setNote("");
+    try {
+      const res = await fetch(`${pngHref}?t=${Date.now()}`);
+      if (!res.ok) throw new Error("Could not load the gift card image.");
+      const blob = await res.blob();
+      const fileName = `songsnuggle-gift-${job.id.slice(0, 8)}.png`;
+      const file = new File([blob], fileName, { type: blob.type || "image/png" });
+      const shareText = `A keepsake song for ${(job.recipientName || "someone special").trim()}.`;
+
+      const withFiles = { files: [file], title: "SongSnuggle gift card", text: shareText };
+      const canShareFiles =
+        typeof navigator !== "undefined" &&
+        typeof navigator.canShare === "function" &&
+        navigator.canShare(withFiles);
+
+      if (canShareFiles && typeof navigator.share === "function") {
+        await navigator.share(withFiles);
+        setNote("Opened your share sheet.");
+        return;
+      }
+
+      // Fallback: download PNG + copy private link (iPhone Safari without file share)
+      const objectUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = objectUrl;
+      a.download = fileName;
+      a.rel = "noopener";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
+      await copyPrivateLink();
+      setNote("Saved the gift card image and copied the private link.");
+    } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setNote("");
+        return;
+      }
+      try {
+        await copyPrivateLink();
+        setNote("Copied the private link — you can still download the QR PNG below.");
+      } catch {
+        setNote(err instanceof Error ? err.message : "Could not share just now.");
+      }
+    } finally {
+      setSharing(false);
+    }
+  }, [copyPrivateLink, job.id, job.recipientName, pngHref]);
+
   const from = (job.senderName || "").trim();
   const written = (job.recipientName || "someone special").trim();
   const message =
@@ -84,36 +152,48 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
   return (
     <div className="space-y-5">
       <p className="text-[var(--muted)]">
-        Print a soft card for the box or bag: their photo, your note, and a QR that opens
-        this private song.
+        Their photo, your note, and a QR that opens this private song — for the box, bag, or
+        a text.
       </p>
 
-      <div className="flex flex-wrap gap-3">
-        <label className="cursor-pointer rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm">
+      {/* Primary mobile (+ desktop) share action */}
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
+        <button
+          type="button"
+          onClick={shareGiftCard}
+          disabled={sharing || busy}
+          className="rounded-full bg-[var(--ink)] px-5 py-3 text-sm text-white disabled:opacity-60"
+        >
+          {sharing ? "Preparing…" : "Send gift card"}
+        </button>
+        <label className="cursor-pointer rounded-full border border-[var(--line)] bg-white px-5 py-3 text-center text-sm">
           {busy ? "Saving photo…" : photoUrl ? "Change photo" : "Add a photo"}
           <input
             type="file"
             accept="image/jpeg,image/png,image/webp"
             className="hidden"
-            disabled={busy}
+            disabled={busy || sharing}
             onChange={(event) => onPhoto(event.target.files?.[0] ?? null)}
           />
         </label>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
         <a
-          className="rounded-full bg-[var(--ink)] px-5 py-3 text-sm text-white"
-          href={pdfHref}
-        >
-          Download PDF
-        </a>
-        <a
-          className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm"
+          className="rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm"
           href={pngHref}
           download
         >
           Download QR PNG
         </a>
         <a
-          className="rounded-full border border-[var(--copper)]/40 bg-[#f8e7db] px-5 py-3 text-sm text-[var(--copper-dark)]"
+          className="rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm"
+          href={pdfHref}
+        >
+          Download PDF
+        </a>
+        <a
+          className="rounded-full border border-[var(--copper)]/40 bg-[#f8e7db] px-4 py-2.5 text-sm text-[var(--copper-dark)]"
           href={printHref}
           target="_blank"
           rel="noreferrer"
@@ -126,7 +206,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
       {/* Live preview — same structure as print sheet */}
       <article
         id={GIFT_CARD_QR_ID}
-        className="mx-auto max-w-sm overflow-hidden rounded-[1.5rem] border border-[var(--line)] bg-gradient-to-b from-[#fffaf2] to-[#f4efe4] shadow-[0_16px_40px_rgba(60,40,20,0.08)]"
+        className="mx-auto w-full max-w-sm overflow-hidden rounded-[1.5rem] border border-[var(--line)] bg-gradient-to-b from-[#fffaf2] to-[#f4efe4] shadow-[0_16px_40px_rgba(60,40,20,0.08)]"
       >
         <div className="space-y-4 p-5">
           <div>
