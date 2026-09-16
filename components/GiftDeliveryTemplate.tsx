@@ -102,7 +102,7 @@ export function GiftDeliveryTemplate({
             </div>
           </div>
 
-          <ShareFriendCta />
+          <ShareFriendCta jobId={job.id} />
         </div>
 
         {qrPrintSlot ? (

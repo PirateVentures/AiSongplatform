@@ -2,41 +2,106 @@
 
 import { useState } from "react";
 
-const INVITE_PATH = "/create?from=gift&utm_source=song_gift&utm_medium=share_friend&promo=GIFTALONG";
+type Props = {
+  jobId: string;
+};
 
 /**
  * Under-lyrics gift reward on paid /song.
- * Soft cohesion with the QR keepsake — pass a free first song, not a referral funnel.
+ * Mints a one-time free-song coupon and shares it with warm gift energy.
  */
-export function ShareFriendCta() {
+export function ShareFriendCta({ jobId }: Props) {
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
+  const [giftLink, setGiftLink] = useState("");
+  const [lastCode, setLastCode] = useState("");
+
+  async function mintInvite(): Promise<{ code: string; url: string } | null> {
+    const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}/gift-share`, {
+      method: "POST",
+    });
+    const data = (await response.json().catch(() => ({}))) as {
+      code?: string;
+      invitePath?: string;
+      error?: string;
+    };
+    if (!response.ok || !data.code || !data.invitePath) {
+      throw new Error(data.error || "Could not prepare your gift.");
+    }
+    const origin =
+      typeof window !== "undefined" ? window.location.origin : "https://songsnuggle.com";
+    return { code: data.code, url: `${origin}${data.invitePath}` };
+  }
+
+  function shareText(code: string) {
+    return `Feeling loved? I'm sending you a FREE SongSnuggle song — a gift. Use code ${code}:`;
+  }
 
   async function shareFriend() {
     setBusy(true);
     setNote("");
-    const url =
-      typeof window !== "undefined"
-        ? `${window.location.origin}${INVITE_PATH}`
-        : `https://songsnuggle.com${INVITE_PATH}`;
-    const text =
-      "Someone you love might need a song too. Your first SongSnuggle is on us — use code GIFTALONG:";
     try {
-      const payload = { title: "A song they can keep", text, url };
+      const minted = await mintInvite();
+      if (!minted) throw new Error("Could not prepare your gift.");
+      setLastCode(minted.code);
+      setGiftLink(minted.url);
+      const text = shareText(minted.code);
+      const payload = {
+        title: "A free SongSnuggle song for you",
+        text,
+        url: minted.url,
+      };
       if (typeof navigator.share === "function" && navigator.canShare?.(payload)) {
         await navigator.share(payload);
-        setNote("Sent with love.");
+        setNote("Gift ready to send.");
         return;
       }
-      await navigator.clipboard.writeText(`${text} ${url}`);
-      setNote("Ready to paste in a text.");
-    } catch {
-      try {
-        await navigator.clipboard.writeText(url);
-        setNote("Link copied — paste it whenever you're ready.");
-      } catch {
-        setNote("Open songsnuggle.com and make one for someone you love.");
+      await navigator.clipboard.writeText(`${text} ${minted.url}`);
+      setNote("Gift ready to send — link copied.");
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Could not prepare your gift.";
+      // User cancelled native share — still a warm success if we minted.
+      if (
+        error instanceof Error &&
+        (error.name === "AbortError" || /cancel/i.test(error.message))
+      ) {
+        setNote("Gift ready to send.");
+        return;
       }
+      try {
+        if (giftLink) {
+          await navigator.clipboard.writeText(giftLink);
+          setNote("Gift link copied — paste it whenever you're ready.");
+          return;
+        }
+      } catch {
+        /* fall through */
+      }
+      setNote(message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyGiftLink() {
+    setBusy(true);
+    setNote("");
+    try {
+      let url = giftLink;
+      let code = lastCode;
+      if (!url) {
+        const minted = await mintInvite();
+        if (!minted) throw new Error("Could not prepare your gift.");
+        url = minted.url;
+        code = minted.code;
+        setGiftLink(url);
+        setLastCode(code);
+      }
+      await navigator.clipboard.writeText(`${shareText(code)} ${url}`);
+      setNote("Gift ready to send — link copied.");
+    } catch (error) {
+      setNote(error instanceof Error ? error.message : "Could not copy gift link.");
     } finally {
       setBusy(false);
     }
@@ -45,14 +110,14 @@ export function ShareFriendCta() {
   return (
     <section className="rounded-[1.5rem] border border-[var(--copper)]/30 bg-gradient-to-br from-[#fffaf2] to-[#eef3ee] p-5 shadow-[0_10px_28px_rgba(60,40,20,0.06)] md:p-6">
       <p className="text-xs uppercase tracking-[0.2em] text-[var(--copper)]">
-        Because this meant something
+        Feeling loved?
       </p>
       <h3 className="serif mt-2 text-2xl text-[var(--ink)]">
-        Send someone a free first song
+        Share with a friend and give the GIFT of a FREE SONG!
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-        The keepsake you just got was made to be passed along. Share this with a
-        friend — their first song is on us, same warm feeling.
+        Pass the warmth along — they get one free SongSnuggle, just for them.
+        One gift, one friend, made to feel like love.
       </p>
       <div className="mt-4 flex flex-wrap gap-3">
         <button
@@ -61,14 +126,16 @@ export function ShareFriendCta() {
           disabled={busy}
           className="rounded-full bg-[var(--ink)] px-5 py-3 text-sm text-white disabled:opacity-60"
         >
-          {busy ? "One moment…" : "Send them a free song"}
+          {busy ? "Warming up…" : "Share a free song"}
         </button>
-        <a
-          className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm"
-          href={INVITE_PATH}
+        <button
+          type="button"
+          onClick={copyGiftLink}
+          disabled={busy}
+          className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm disabled:opacity-60"
         >
-          Start one for them
-        </a>
+          Copy gift link
+        </button>
       </div>
       {note ? (
         <p className="mt-3 text-sm text-[var(--copper-dark)]" role="status">

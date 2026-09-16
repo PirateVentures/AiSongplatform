@@ -28,7 +28,7 @@ export function CheckoutPanel({ id }: { id: string }) {
   const [promoCode, setPromoCode] = useState("");
   const total = brand.songPrice + (print ? brand.lyricsPrice : 0);
 
-  // Friend-gift share lands with ?promo=GIFTALONG — prefill so the free song is one tap.
+  // One-time friend gift codes land with ?promo=CODE — prefill so redeem is one tap.
   useEffect(() => {
     try {
       const promo = new URLSearchParams(window.location.search).get("promo");

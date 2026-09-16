@@ -5,9 +5,6 @@ import type { SongJob } from "./types";
 /** Internal ops unlock — not shown on the public gift face. */
 export const FREESNUGGLE_CODE = "FREESNUGGLE";
 
-/** Public friend-gift reward on paid /song share CTA. First song on us. */
-export const GIFTALONG_CODE = "GIFTALONG";
-
 export const PAID_WEBHOOK_TYPES = new Set([
   "payment.succeeded",
   "payment.paid",
@@ -17,9 +14,7 @@ export function matchesFreeSnuggle(code: unknown): boolean {
   const normalized = String(code ?? "")
     .trim()
     .toUpperCase();
-  return (
-    normalized === FREESNUGGLE_CODE || normalized === GIFTALONG_CODE
-  );
+  return normalized === FREESNUGGLE_CODE;
 }
 
 export function checkoutJobMetadata(jobId: string, includeLyricPrint: boolean) {
