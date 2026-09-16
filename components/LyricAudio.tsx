@@ -110,17 +110,33 @@ export function LyricAudio({
     setPlaying(false);
   }, [src]);
 
-  // Systemic continuous-play: buffer same-origin MP3 as a blob URL so Safari
-  // does not depend on progressive Range/Content-Length mid-stream.
+  // P0 public create: Play must work COLD — never disable while downloading.
+  // Always start on progressive Worker Range/CL src (Play enabled immediately).
+  // Safari + preview-sized MP3: KEEP direct src (blob upgrade caused Loading stick /
+  // mid-frame decode issues). Non-Safari full gifts may still blob-upgrade modestly.
   useEffect(() => {
     let cancelled = false;
     if (objectUrlRef.current) {
       URL.revokeObjectURL(objectUrlRef.current);
       objectUrlRef.current = null;
     }
-    setBuffering(true);
-    setPlaySrc("");
+    setPlaySrc(src);
+    setBuffering(false);
     const abs = src.startsWith("http") ? src : `${window.location.origin}${src}`;
+    const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+    const isWebKit =
+      /AppleWebKit/i.test(ua) && !/Chrome|Chromium|Edg|OPR|Firefox/i.test(ua);
+    const isPreviewCap = typeof maxPlaySeconds === "number" && maxPlaySeconds > 0;
+    // Safari preview OR any preview-cap path: stay on Range src.
+    if (isWebKit || isPreviewCap) {
+      return () => {
+        cancelled = true;
+        if (objectUrlRef.current) {
+          URL.revokeObjectURL(objectUrlRef.current);
+          objectUrlRef.current = null;
+        }
+      };
+    }
     (async () => {
       try {
         const res = await fetch(abs, {
@@ -128,26 +144,24 @@ export function LyricAudio({
           cache: "no-store",
           headers: { Accept: "audio/mpeg,audio/*,*/*" },
         });
-        if (!res.ok || cancelled) {
-          if (!cancelled) { setPlaySrc(src); setBuffering(false); }
-          return;
-        }
+        if (!res.ok || cancelled) return;
         const buf = await res.arrayBuffer();
         if (cancelled) return;
         const ctype = res.headers.get("content-type") || "audio/mpeg";
-        // Large WAV: use Worker Range/CL fastpath. Small MP3: full blob buffer.
-        if (buf.byteLength < 1024 || buf.byteLength > 4_000_000) {
-          setPlaySrc(src);
-          setBuffering(false);
-          return;
-        }
-        const url = URL.createObjectURL(new Blob([buf], { type: ctype }));
+        if (buf.byteLength < 1024 || buf.byteLength > 2_500_000) return;
+        if (!ctype.includes("mpeg") && !ctype.includes("mp3") && !ctype.includes("octet-stream")) return;
+        const url = URL.createObjectURL(new Blob([buf], { type: "audio/mpeg" }));
         if (cancelled) { URL.revokeObjectURL(url); return; }
+        const node = audioRef.current;
+        const t = node?.currentTime || 0;
+        const was = node ? !node.paused : false;
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = url;
         setPlaySrc(url);
-        setBuffering(false);
+        resumeAtRef.current = t;
+        wasPlayingRef.current = was;
       } catch {
-        if (!cancelled) { setPlaySrc(src); setBuffering(false); }
+        /* keep progressive src */
       }
     })();
     return () => {
@@ -157,7 +171,7 @@ export function LyricAudio({
         objectUrlRef.current = null;
       }
     };
-  }, [src]);
+  }, [src, maxPlaySeconds]);
 
   // Optional soft repair when full cues disagree with encoded/true duration.
   useEffect(() => {

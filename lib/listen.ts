@@ -1,5 +1,5 @@
 /** Server + client shared listen-gate thresholds. */
-export const LISTEN_MIN_SECONDS = 8;
+export const LISTEN_MIN_SECONDS = 3;
 export const LISTEN_MIN_FRACTION = 0.5;
 
 export function meetsListenRequirement(listenedSeconds: number, durationSeconds = 0): boolean {
