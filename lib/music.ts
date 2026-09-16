@@ -454,14 +454,16 @@ export function isHeartfeltOccasion(occasion: string): boolean {
 }
 
 export function previewTargetSeconds(job: SongJob): number {
-  // Einstein G / MUSIC BAR v2: heartfelt ≥60s floor (70 default; dense → 85).
-  // Non-heartfelt stays at free-preview 45s marketing copy.
-  if (isHeartfeltOccasion(job.occasion || "")) {
-    const words = (job.lyrics || "").split(/\s+/).filter(Boolean).length;
-    if (words >= 180) return 85;
-    return 70;
-  }
-  return PREVIEW_MAX_SECONDS;
+  // Einstein G / MUSIC BAR v2: ALWAYS compose at ≥70s (dense → 85).
+  // P0 Chris cold-create RCA (2026-09-15 HT): /create defaults to just-because,
+  // which previously forced a 45s compose with ~200-word full lyrics → EL returned
+  // instrumental / zero matched stamps (NO_VOCAL_PREVIEW missing=all lines) →
+  // previewReady never flipped → Play never appeared → checkout stayed locked.
+  // Free 45s marketing clock remains a SERVE/PLAY hard-cap (worker + LyricAudio),
+  // not the compose budget.
+  const words = (job.lyrics || "").split(/\s+/).filter(Boolean).length;
+  if (words >= 180) return 85;
+  return 70;
 }
 
 export async function writePreviewAudio(job: SongJob): Promise<{
@@ -576,8 +578,24 @@ export async function writePreviewAudio(job: SongJob): Promise<{
   }
 
   await writeAudio(job.id, "preview", wav, "wav");
-  // Delete any stale dual-compose / instrumental MP3 so /audio serves THIS WAV.
-  await deleteAudio(job.id, "preview", "mp3");
+  // P0 PUBLIC /create: PreviewStudio always requests ?format=mp3.
+  // Encode Xing-honest ≤45s MP3 from THIS WAV (same master — not dual compose).
+  // Never delete preview MP3 until the replacement for this take is written.
+  {
+    const { PREVIEW_MAX_SECONDS, truncateWavToSeconds } = await import("./preview-cap");
+    const { encodeWavToMp3 } = await import("./wav-to-mp3");
+    const capped = truncateWavToSeconds(new Uint8Array(wav), PREVIEW_MAX_SECONDS);
+    try {
+      const mp3 = encodeWavToMp3(capped, 192);
+      await writeAudio(job.id, "preview", mp3, "mp3");
+    } catch (err) {
+      console.error("[music] preview MP3 encode failed — leaving prior MP3 if any", {
+        jobId: job.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      // Do NOT deleteAudio(preview, mp3) on encode failure — better stale than 404.
+    }
+  }
 
   return {
     cues,
@@ -610,8 +628,21 @@ export async function syncPreviewFromFullMaster(
   if (fullMp3 && fullMp3.byteLength > 1024) {
     const capped = truncateMp3ToSeconds(new Uint8Array(fullMp3), previewCapSec);
     await writeAudio(jobId, "preview", Buffer.from(capped), "mp3");
+  } else if (fullWav && fullWav.byteLength > 1024) {
+    // Same-master encode when EL/full MP3 missing — never leave preview without MP3.
+    const { encodeWavToMp3 } = await import("./wav-to-mp3");
+    const cappedWav = truncateWavToSeconds(new Uint8Array(fullWav), previewCapSec);
+    try {
+      const mp3 = encodeWavToMp3(cappedWav, 192);
+      await writeAudio(jobId, "preview", mp3, "mp3");
+    } catch (err) {
+      console.error("[music] syncPreview MP3 encode failed", {
+        jobId,
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
   } else {
-    // Avoid stale MP3 from a different take lying as preview.
+    // No full master at all — only then clear stale MP3.
     await deleteAudio(jobId, "preview", "mp3");
   }
   return { previewDerivedFromFull: true };

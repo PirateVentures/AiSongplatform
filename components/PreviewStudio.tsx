@@ -7,6 +7,15 @@ import type { PublicSongJob } from "@/lib/types";
 import { LyricAudio } from "@/components/LyricAudio";
 import { PREVIEW_MAX_SECONDS } from "@/lib/preview-cap";
 
+
+function friendlyPreviewError(raw: string): string {
+  const msg = raw || "Could not make preview.";
+  if (/NO_VOCAL_PREVIEW|PREVIEW_GATE_FAIL|instrumental|sung stamps/i.test(msg)) {
+    return "We couldn't get a clear sung preview yet. Tap Create preview again — or Try new lyrics for a shorter draft.";
+  }
+  return msg;
+}
+
 export function PreviewStudio({ id }: { id: string }) {
   const router = useRouter();
   const [job, setJob] = useState<PublicSongJob | null>(null);
@@ -146,7 +155,7 @@ export function PreviewStudio({ id }: { id: string }) {
       setJob(json.job ?? null);
       setPlayWhenReady(true);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not make preview.");
+      setError(friendlyPreviewError(err instanceof Error ? err.message : "Could not make preview."));
     } finally {
       setBusy(null);
     }
@@ -227,7 +236,7 @@ export function PreviewStudio({ id }: { id: string }) {
           <>
             <LyricAudio
               key={job.updatedAt}
-              src={`/api/jobs/${id}/audio?format=mp3&t=${encodeURIComponent(job.updatedAt)}`}
+              src={`/api/jobs/${id}/audio?t=${encodeURIComponent(job.updatedAt)}`}
               cues={job.lyricCues || []}
               fallbackLyrics={job.lyrics}
               autoPlay={playWhenReady}
