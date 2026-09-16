@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LyricCue } from "@/lib/cues";
+import {
+  cueSpanEnd,
+  cuesNeedRescale,
+  rescaleCuesToDuration,
+  resolvePlayableDurationSec,
+  sealCueGaps,
+} from "@/lib/cues";
 import { listenRequirementHint, meetsListenRequirement } from "@/lib/listen";
 
 function formatTime(seconds: number) {
@@ -16,39 +23,154 @@ export function LyricAudio({
   cues,
   fallbackLyrics,
   autoPlay = false,
+  maxPlaySeconds,
+  encodedDurationSec,
+  jobId,
   onListenProgress,
+  gift = false,
+  title,
 }: {
   src: string;
   cues: LyricCue[];
   fallbackLyrics?: string;
   autoPlay?: boolean;
+  /** When set (preview ONLY), hard-stop playback at this many seconds. Never pass on gift/full. */
+  maxPlaySeconds?: number;
+  /** Authoritative encode length (WAV PCM / job.audioDurationSec). Beats HTMLMediaElement.duration. */
+  encodedDurationSec?: number | null;
+  /** Optional: POST /repair-cues when client detects span mismatch on full play. */
+  jobId?: string;
   /** Fired with accumulated real playtime (seeks ignored). Not fired from onLoadedData. */
   onListenProgress?: (info: {
     listenedSeconds: number;
     durationSeconds: number;
     complete: boolean;
   }) => void;
+  /** Soft gift framing for private /song and post-pay. */
+  gift?: boolean;
+  title?: string;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const activeRef = useRef<HTMLParagraphElement>(null);
   const lastTickRef = useRef(0);
   const listenedRef = useRef(0);
   const completeRef = useRef(false);
+  const repairPostedRef = useRef(false);
   const [time, setTime] = useState(0);
-  const [duration, setDuration] = useState(0);
+  const [mediaDuration, setMediaDuration] = useState(0);
   const [listened, setListened] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [blocked, setBlocked] = useState(false);
+
+  // Preview cap must NEVER apply on full/unlocked playback.
+  const cap =
+    typeof maxPlaySeconds === "number" && maxPlaySeconds > 0
+      ? maxPlaySeconds
+      : null;
+
+  const cueEnd = useMemo(() => cueSpanEnd(cues || []), [cues]);
+
+  const playableDuration = useMemo(() => {
+    if (cap) return cap;
+    return resolvePlayableDurationSec({
+      encodedSec: encodedDurationSec,
+      mediaSec: mediaDuration,
+      cueEndSec: cueEnd,
+      slackSec: 2,
+    });
+  }, [cap, encodedDurationSec, mediaDuration, cueEnd]);
+
+  const fittedCues = useMemo(() => {
+    // Never display unsung cue shells (zero word stamps) — fc06 Mayan/high-road.
+    const list = (cues || []).filter((c) => (c.words || []).length > 0);
+    if (!list.length) return list;
+    // Full play: fit to TRUE playable duration — never to inflated media alone.
+    const target = playableDuration;
+    if (target > 1 && cuesNeedRescale(list, target, 2)) {
+      return rescaleCuesToDuration(list, target);
+    }
+    if (target > 1) return sealCueGaps(list, target);
+    return list;
+  }, [cues, playableDuration]);
+
+  const [playSrc, setPlaySrc] = useState("");
+  const [buffering, setBuffering] = useState(true);
+  const objectUrlRef = useRef<string | null>(null);
+  const stallTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resumeAtRef = useRef(0);
+  const wasPlayingRef = useRef(false);
 
   useEffect(() => {
     listenedRef.current = 0;
     completeRef.current = false;
     lastTickRef.current = 0;
+    repairPostedRef.current = false;
     setListened(0);
     setTime(0);
-    setDuration(0);
+    setMediaDuration(0);
     setPlaying(false);
   }, [src]);
+
+  // Systemic continuous-play: buffer same-origin MP3 as a blob URL so Safari
+  // does not depend on progressive Range/Content-Length mid-stream.
+  useEffect(() => {
+    let cancelled = false;
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    setBuffering(true);
+    setPlaySrc("");
+    const abs = src.startsWith("http") ? src : `${window.location.origin}${src}`;
+    (async () => {
+      try {
+        const res = await fetch(abs, {
+          credentials: "same-origin",
+          cache: "no-store",
+          headers: { Accept: "audio/mpeg,audio/*,*/*" },
+        });
+        if (!res.ok || cancelled) {
+          if (!cancelled) { setPlaySrc(src); setBuffering(false); }
+          return;
+        }
+        const buf = await res.arrayBuffer();
+        if (cancelled) return;
+        const ctype = res.headers.get("content-type") || "audio/mpeg";
+        // Large WAV: use Worker Range/CL fastpath. Small MP3: full blob buffer.
+        if (buf.byteLength < 1024 || buf.byteLength > 4_000_000) {
+          setPlaySrc(src);
+          setBuffering(false);
+          return;
+        }
+        const url = URL.createObjectURL(new Blob([buf], { type: ctype }));
+        if (cancelled) { URL.revokeObjectURL(url); return; }
+        objectUrlRef.current = url;
+        setPlaySrc(url);
+        setBuffering(false);
+      } catch {
+        if (!cancelled) { setPlaySrc(src); setBuffering(false); }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
+  }, [src]);
+
+  // Optional soft repair when full cues disagree with encoded/true duration.
+  useEffect(() => {
+    if (cap || !jobId || repairPostedRef.current) return;
+    if (!(playableDuration > 1) || !(cueEnd > 0.5)) return;
+    if (Math.abs(cueEnd - playableDuration) <= 2) return;
+    repairPostedRef.current = true;
+    void fetch(`/api/jobs/${jobId}/repair-cues`, { method: "POST" }).catch(
+      () => {
+        /* best-effort */
+      },
+    );
+  }, [cap, jobId, playableDuration, cueEnd]);
 
   useEffect(() => {
     const node = audioRef.current;
@@ -66,14 +188,34 @@ export function LyricAudio({
 
     const onTime = () => {
       const current = node.currentTime || 0;
-      const dur = Number.isFinite(node.duration) ? node.duration : 0;
+      const rawDur = Number.isFinite(node.duration) ? node.duration : 0;
+      if (rawDur > 0) setMediaDuration(rawDur);
+
+      const trueDur = resolvePlayableDurationSec({
+        encodedSec: encodedDurationSec,
+        mediaSec: rawDur,
+        cueEndSec: cueEnd,
+        slackSec: 2,
+      });
+      const dur = cap && trueDur > 0 ? Math.min(trueDur, cap) : cap || trueDur;
+
+      if (cap && current >= cap) {
+        node.pause();
+        try {
+          node.currentTime = cap;
+        } catch {
+          /* ignore seek errors */
+        }
+        setTime(cap);
+        setPlaying(false);
+        lastTickRef.current = cap;
+        return;
+      }
       setTime(current);
-      if (dur > 0) setDuration(dur);
 
       if (!node.paused && !node.ended) {
         const prev = lastTickRef.current;
         const delta = current - prev;
-        // Count only forward playback ticks; ignore seeks/jumps.
         if (delta > 0 && delta < 1.25) {
           const next = listenedRef.current + delta;
           listenedRef.current = next;
@@ -86,7 +228,7 @@ export function LyricAudio({
 
     const onMeta = () => {
       const dur = Number.isFinite(node.duration) ? node.duration : 0;
-      if (dur > 0) setDuration(dur);
+      if (dur > 0) setMediaDuration(dur);
     };
 
     const onPlay = () => {
@@ -112,90 +254,206 @@ export function LyricAudio({
       node.removeEventListener("pause", onPause);
       node.removeEventListener("ended", onPause);
     };
-  }, [src, onListenProgress]);
-
+  }, [playSrc, onListenProgress, cap, encodedDurationSec, cueEnd]);
+  // If playback stalls (waiting > 2.5s with no progress), nudge currentTime and resume.
   useEffect(() => {
     const node = audioRef.current;
     if (!node) return;
-    node.load();
-    if (!autoPlay) return;
-    const attempt = node.play();
-    if (attempt) {
-      attempt.catch(() => setBlocked(true));
-    }
-  }, [src, autoPlay]);
+    const clearStall = () => {
+      if (stallTimerRef.current) {
+        clearTimeout(stallTimerRef.current);
+        stallTimerRef.current = null;
+      }
+    };
+    const onWaiting = () => {
+      clearStall();
+      const frozenAt = node.currentTime || 0;
+      stallTimerRef.current = setTimeout(() => {
+        if (node.paused || node.ended) return;
+        if (Math.abs((node.currentTime || 0) - frozenAt) > 0.15) return;
+        try {
+          node.currentTime = Math.max(0, frozenAt + 0.05);
+          void node.play().catch(() => undefined);
+        } catch {
+          /* ignore */
+        }
+      }, 2500);
+    };
+    const onPlaying = () => clearStall();
+    node.addEventListener("waiting", onWaiting);
+    node.addEventListener("playing", onPlaying);
+    node.addEventListener("timeupdate", clearStall);
+    return () => {
+      clearStall();
+      node.removeEventListener("waiting", onWaiting);
+      node.removeEventListener("playing", onPlaying);
+      node.removeEventListener("timeupdate", clearStall);
+    };
+  }, [playSrc]);
+
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [time]);
+    const node = audioRef.current;
+    if (!node || !playSrc) return;
+    const resumeAt = resumeAtRef.current;
+    const shouldResume = wasPlayingRef.current || autoPlay;
+    const onReady = () => {
+      try { if (resumeAt > 0.05) node.currentTime = resumeAt; } catch { /* ignore */ }
+      if (shouldResume) {
+        const attempt = node.play();
+        if (attempt) attempt.catch(() => setBlocked(true));
+      }
+      node.removeEventListener("loadeddata", onReady);
+    };
+    node.addEventListener("loadeddata", onReady);
+    node.load();
+    return () => node.removeEventListener("loadeddata", onReady);
+  }, [playSrc, autoPlay]);
 
-  const active = cues.findIndex((cue) => time >= cue.start && time < cue.end);
+  // JOSEPH LOCK: lyric sync / karaoke highlight DEFERRED — static lyrics text only.
+  const progress =
+    playableDuration > 0
+      ? Math.min(100, (time / playableDuration) * 100)
+      : 0;
 
   async function togglePlay() {
     const node = audioRef.current;
-    if (!node) return;
+    if (!node || !playSrc) return;
     if (node.paused) {
       try {
         await node.play();
+        wasPlayingRef.current = true;
         setBlocked(false);
       } catch {
         setBlocked(true);
       }
     } else {
+      resumeAtRef.current = node.currentTime || 0;
+      wasPlayingRef.current = false;
       node.pause();
     }
   }
 
-  return (
-    <div>
-      <div className="mt-4 flex flex-wrap items-center gap-3">
+  const player = (
+    <>
+      <div className={`flex flex-wrap items-center gap-3 ${gift ? "" : "mt-4"}`}>
         <button
           type="button"
           onClick={togglePlay}
-          className="rounded-full bg-[var(--copper)] px-5 py-2 text-white"
+          disabled={buffering || !playSrc}
+          className={
+            gift
+              ? "rounded-full bg-[var(--copper)] px-7 py-3 text-base font-medium text-white shadow-sm disabled:opacity-50"
+              : "rounded-full bg-[var(--copper)] px-5 py-2 text-white disabled:opacity-50"
+          }
         >
-          {playing ? "Pause song" : "Play song"}
+          {buffering ? "Loading…" : playing ? "Pause" : gift ? "Play gift" : "Play song"}
         </button>
-        <p className="text-sm text-[var(--muted)]">{formatTime(time)}</p>
+        <p className="text-sm text-[var(--muted)]">
+          {formatTime(time)}
+          {playableDuration
+            ? ` / ${formatTime(playableDuration)}`
+            : ""}
+        </p>
       </div>
-      <audio ref={audioRef} className="mt-3 w-full" controls src={src} />
-      <p className="mt-2 text-sm text-[var(--muted)]">
-        {listenRequirementHint(listened, duration)}
-      </p>
-      {blocked ? (
-        <p className="mt-2 text-sm text-[var(--copper-dark)]">Press Play song to hear it with the lyrics.</p>
+
+      {gift ? (
+        <div className="mt-4 h-1.5 overflow-hidden rounded-full bg-[var(--line)]">
+          <div
+            className="h-full rounded-full bg-[var(--copper)] transition-[width] duration-150"
+            style={{ width: `${progress}%` }}
+          />
+        </div>
       ) : null}
-      <div className="mt-4 max-h-72 overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4">
-        {cues.length ? (
-          cues.map((cue, index) => (
+
+      {/* Preview: one clock — custom scrubber maxed at cap; hide native controls (they show full master). */}
+      {cap && !gift ? (
+        <input
+          type="range"
+          min={0}
+          max={playableDuration || cap}
+          step={0.05}
+          value={Math.min(time, playableDuration || cap)}
+          aria-label="Preview position"
+          className="mt-3 w-full accent-[var(--copper)]"
+          onChange={(event) => {
+            const node = audioRef.current;
+            if (!node) return;
+            const next = Math.min(Number(event.target.value), cap);
+            try {
+              node.currentTime = next;
+            } catch {
+              /* ignore */
+            }
+            setTime(next);
+            lastTickRef.current = next;
+          }}
+        />
+      ) : null}
+
+      <audio
+        ref={audioRef}
+        className={gift || cap ? "sr-only" : "mt-3 w-full"}
+        controls={!gift && !cap}
+        src={playSrc || undefined}
+        preload="auto"
+        playsInline
+        onSeeked={() => {
+          const node = audioRef.current;
+          if (!node || !cap) return;
+          if ((node.currentTime || 0) > cap) {
+            node.currentTime = cap;
+            node.pause();
+          }
+        }}
+      />
+
+      {!gift ? (
+        <p className="mt-2 text-sm text-[var(--muted)]">
+          {listenRequirementHint(listened, playableDuration || mediaDuration)}
+        </p>
+      ) : null}
+
+      {blocked ? (
+        <p className="mt-2 text-sm text-[var(--copper-dark)]">
+          Press {gift ? "Play gift" : "Play song"} to hear it with the lyrics.
+        </p>
+      ) : null}
+
+      <div
+        className={
+          gift
+            ? "mt-5 max-h-80 overflow-y-auto rounded-2xl border border-[var(--line)] bg-[#fffaf4]/90 p-5 shadow-inner"
+            : "mt-4 max-h-72 overflow-y-auto rounded-2xl border border-[var(--line)] bg-white p-4"
+        }
+      >
+        {gift ? (
+          <p className="mb-3 text-xs uppercase tracking-[0.18em] text-[var(--copper)]">
+            Lyrics
+          </p>
+        ) : null}
+        {fittedCues.length ? (
+          fittedCues.map((cue) => (
             <p
               key={`${cue.start}-${cue.text}`}
-              ref={index === active ? activeRef : undefined}
-              className={
-                index === active
-                  ? "serif py-1 text-lg text-[var(--ink)]"
-                  : "py-1 text-[var(--muted)]"
-              }
+              className="py-1.5 text-[var(--ink)]"
             >
-              {cue.words?.length
-                ? cue.words.map((word) => {
-                    const on = time >= word.start && time < word.end;
-                    return (
-                      <span
-                        key={`${word.start}-${word.text}`}
-                        className={on ? "rounded-sm bg-[var(--copper)]/20 px-0.5 text-[var(--ink)]" : undefined}
-                      >
-                        {word.text}{" "}
-                      </span>
-                    );
-                  })
-                : cue.text}
+              {cue.text}
             </p>
           ))
         ) : (
-          <pre className="whitespace-pre-wrap text-[var(--muted)]">{fallbackLyrics}</pre>
+          <pre className="whitespace-pre-wrap text-[var(--ink)]">
+            {fallbackLyrics}
+          </pre>
         )}
       </div>
-    </div>
+    </>
+  );
+
+  if (!gift) return <div>{player}</div>;
+
+  // Gift chrome lives in GiftDeliveryTemplate; keep a soft inner frame when used alone.
+  return (
+    <div className="mt-2">{player}</div>
   );
 }

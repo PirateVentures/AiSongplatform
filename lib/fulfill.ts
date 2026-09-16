@@ -1,4 +1,6 @@
 import { sendDeliveryEmail } from "./email";
+import { cuesWithSungWordsOnly, lyricsFromSungCues } from "./lyric-parse";
+import { lintLyricCues, lintLyricText } from "./lyric-lint";
 import { writeFullAudio } from "./music";
 import { getJob, updateJob } from "./store";
 import type { SongJob } from "./types";
@@ -6,18 +8,39 @@ import type { SongJob } from "./types";
 /**
  * Unlock full song after Whop payment.succeeded, demo-pay, or FREESNUGGLE.
  * Delivery email is best-effort: Resend failures are logged and never roll back unlock.
+ * Joseph ONE-master: writeFullAudio overwrites preview as cap of the paid master.
  */
 export async function fulfillPaidJob(job: SongJob, paymentId: string | null) {
   if (job.paidAt && job.fullReady) {
     return job;
   }
 
-  const cues = await writeFullAudio(job);
+  const {
+    cues: rawCues,
+    audioDurationSec,
+    masterSourceId,
+    masterFingerprint,
+  } = await writeFullAudio(job);
+  let cues = cuesWithSungWordsOnly(rawCues.length ? rawCues : job.lyricCues || []);
+  {
+    const linted = lintLyricCues(cues);
+    if (linted.fixes.length) cues = linted.cues;
+  }
+  let sungLyrics = cues.length ? lyricsFromSungCues(cues) : job.lyrics;
+  {
+    const linted = lintLyricText(sungLyrics || "");
+    if (linted.fixes.length) sungLyrics = linted.text;
+  }
   const next = await updateJob(job.id, {
     paidAt: new Date().toISOString(),
     fullReady: true,
+    previewReady: true,
     status: "delivered",
     lyricCues: cues.length ? cues : job.lyricCues,
+    lyrics: sungLyrics,
+    audioDurationSec: audioDurationSec || null,
+    masterSourceId: masterSourceId || job.masterSourceId || null,
+    masterFingerprint: masterFingerprint || job.masterFingerprint || null,
     whopPaymentId: paymentId ?? job.whopPaymentId,
   });
   const delivered = next ?? ((await getJob(job.id)) || job);

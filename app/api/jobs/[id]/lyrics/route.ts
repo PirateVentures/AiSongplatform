@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { generateLyrics } from "@/lib/lyrics";
+import { lintLyricText } from "@/lib/lyric-lint";
 import { getJob, publicJob, updateJob } from "@/lib/store";
 
 export async function POST(
@@ -13,9 +14,12 @@ export async function POST(
   }
 
   let lyrics = "";
+  let regenerate = false;
   try {
-    const body = (await request.json()) as { lyrics?: string };
-    if (typeof body.lyrics === "string" && body.lyrics.trim()) {
+    const body = (await request.json()) as { lyrics?: string; regenerate?: boolean };
+    if (body.regenerate === true) {
+      regenerate = true;
+    } else if (typeof body.lyrics === "string" && body.lyrics.trim()) {
       lyrics = body.lyrics.trim().slice(0, 5000);
     }
   } catch {
@@ -24,13 +28,19 @@ export async function POST(
 
   if (!lyrics) {
     try {
-      lyrics = await generateLyrics(job);
+      lyrics = await generateLyrics(job, { fresh: regenerate });
     } catch (error) {
       console.error("[lyrics-route]", error);
       const message =
         error instanceof Error ? error.message : "Could not generate lyrics.";
       return NextResponse.json({ error: message }, { status: 502 });
     }
+  }
+
+  const linted = lintLyricText(lyrics);
+  if (linted.fixes.length) {
+    console.info("[lyrics] lint fixes", { id, fixes: linted.fixes });
+    lyrics = linted.text;
   }
 
   const next = await updateJob(id, {
