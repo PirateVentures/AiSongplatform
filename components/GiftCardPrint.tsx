@@ -152,8 +152,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
   return (
     <div className="space-y-5">
       <p className="text-[var(--muted)]">
-        Their photo, your note, and a QR that opens this private song — for the box, bag, or
-        a text.
+        Add a photo and a note, then send the card — or print it for the box or bag.
       </p>
 
       {/* Primary mobile (+ desktop) share action */}
@@ -184,7 +183,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
           href={pngHref}
           download
         >
-          Download QR PNG
+          Save card image
         </a>
         <a
           className="rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm"
@@ -198,7 +197,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
           target="_blank"
           rel="noreferrer"
         >
-          Print layout
+          Print card
         </a>
       </div>
       {note ? <p className="text-sm text-[var(--copper-dark)]">{note}</p> : null}

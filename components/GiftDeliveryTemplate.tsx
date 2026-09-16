@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { LyricAudio } from "@/components/LyricAudio";
 import { SongDelivery } from "@/components/SongDelivery";
+import { ShareFriendCta } from "@/components/ShareFriendCta";
 import type { LyricCue } from "@/lib/cues";
 import type { PublicSongJob } from "@/lib/types";
 
@@ -70,34 +71,38 @@ export function GiftDeliveryTemplate({
             : undefined
         }
       >
-        <div className="overflow-hidden rounded-[1.75rem] border border-[var(--line)] bg-gradient-to-b from-[#fff8f1] via-[#f7f1e8] to-[#eef3ee] p-1 shadow-[0_18px_50px_rgba(60,40,20,0.08)]">
-          <div className="rounded-[1.5rem] border border-white/70 bg-white/55 p-5 backdrop-blur-sm md:p-7">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-xs uppercase tracking-[0.22em] text-[var(--copper)]">
-                  A song they can keep
-                </p>
-                <h2 className="serif mt-2 text-2xl text-[var(--ink)]">{displayTitle}</h2>
+        <div className="space-y-5">
+          <div className="overflow-hidden rounded-[1.75rem] border border-[var(--line)] bg-gradient-to-b from-[#fff8f1] via-[#f7f1e8] to-[#eef3ee] p-1 shadow-[0_18px_50px_rgba(60,40,20,0.08)]">
+            <div className="rounded-[1.5rem] border border-white/70 bg-white/55 p-5 backdrop-blur-sm md:p-7">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-xs uppercase tracking-[0.22em] text-[var(--copper)]">
+                    A song they can keep
+                  </p>
+                  <h2 className="serif mt-2 text-2xl text-[var(--ink)]">{displayTitle}</h2>
+                </div>
+                <span
+                  aria-hidden
+                  className="mt-1 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--copper)]/30 bg-[#f8e7db] text-[var(--copper-dark)]"
+                >
+                  ♡
+                </span>
               </div>
-              <span
-                aria-hidden
-                className="mt-1 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[var(--copper)]/30 bg-[#f8e7db] text-[var(--copper-dark)]"
-              >
-                ♡
-              </span>
-            </div>
 
-            <LyricAudio
-              gift
-              jobId={job.id}
-              title={displayTitle}
-              src={audioSrc}
-              cues={cues}
-              fallbackLyrics={job.lyrics}
-              encodedDurationSec={encodedDurationSec}
-              /* full/unlocked: never pass maxPlaySeconds */
-            />
+              <LyricAudio
+                gift
+                jobId={job.id}
+                title={displayTitle}
+                src={audioSrc}
+                cues={cues}
+                fallbackLyrics={job.lyrics}
+                encodedDurationSec={encodedDurationSec}
+                /* full/unlocked: never pass maxPlaySeconds */
+              />
+            </div>
           </div>
+
+          <ShareFriendCta />
         </div>
 
         {qrPrintSlot ? (
@@ -106,10 +111,10 @@ export function GiftDeliveryTemplate({
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
                   <p className="text-xs uppercase tracking-[0.22em] text-[var(--copper)]">
-                    Gift card + QR
+                    Their keepsake card
                   </p>
                   <p className="mt-2 text-sm text-[var(--muted)]">
-                    Front and center — scan, print, or send the card.
+                    Tuck it in a box, text it, or print it for the bag.
                   </p>
                 </div>
                 <span
@@ -131,7 +136,7 @@ export function GiftDeliveryTemplate({
       {emailSlot ? (
         <section className="rounded-3xl border border-dashed border-[var(--line)] bg-white/50 p-5">
           <p className="text-xs uppercase tracking-[0.18em] text-[var(--copper)]">
-            Branded email
+            We'll email this page
           </p>
           <div className="mt-3">{emailSlot}</div>
         </section>
