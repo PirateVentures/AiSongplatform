@@ -1394,12 +1394,15 @@ export async function renderWithElevenLabs(job: SongJob, targetSeconds: number):
   const isBad = () => {
     if (!result.sungAligned || result.cues.length === 0) return true;
     if (looksInstrumentalOnly(result.wav, result.sungAligned)) return true;
-    // HARD: every script line must appear in sung word stamps (fc06 Mayan/high-road).
-    // Prefer recompose over silently dropping lines from display.
+    // Prefer recompose when a large share of script lines never appear in stamps
+    // (fc06 Mayan/high-road). A couple of missing lines is OK — sung-only display.
     const scriptMissing = displayLinesMissingFromSung(composeLyrics, result.cues);
-    if (scriptMissing.length) {
+    const totalLines = Math.max(1, (composeLyrics || "").split(/\n/).map((l) => l.trim()).filter(Boolean).length);
+    const missingFrac = scriptMissing.length / totalLines;
+    if (scriptMissing.length && missingFrac > 0.25) {
       console.error("[elevenlabs] script lines missing from sung stamps", {
         count: scriptMissing.length,
+        missingFrac,
         sample: scriptMissing.slice(0, 3),
       });
       return true;
@@ -1424,20 +1427,28 @@ export async function renderWithElevenLabs(job: SongJob, targetSeconds: number):
 
   if (isBad()) {
     const scriptMissing = displayLinesMissingFromSung(composeLyrics, result.cues);
-    // HARD FAIL — never soft-allow / soft-publish with trimmed display lyrics after retries.
-    // Recompose again upstream or explicit fail state (not previewReady with stripped script).
-    if (scriptMissing.length) {
+    const instrumental = looksInstrumentalOnly(result.wav, result.sungAligned);
+    // True dead takes: no stamps / instrumental bed — still hard fail.
+    if (!result.sungAligned || result.cues.length === 0 || instrumental) {
       throw new Error(
-        `NO_VOCAL_PREVIEW: script lines still missing from sung stamps after retries ` +
-          `(missing=${scriptMissing.length}, sample=${JSON.stringify(scriptMissing.slice(0, 2))}). ` +
-          `Refuse soft-publish with stripped display lyrics.`,
+        `NO_VOCAL_PREVIEW: ElevenLabs returned instrumental or no sung word timestamps ` +
+          `(sungAligned=${result.sungAligned}, stamps=${result.stampCount}, midFrac=${presence.midFrac.toFixed(3)}, ` +
+          `missingLines=${scriptMissing.length}). ` +
+          `Refuse publishing equal-time fake karaoke cues.`,
       );
     }
-    throw new Error(
-      `NO_VOCAL_PREVIEW: ElevenLabs returned instrumental or no sung word timestamps ` +
-        `(sungAligned=${result.sungAligned}, stamps=${result.stampCount}, midFrac=${presence.midFrac.toFixed(3)}). ` +
-        `Refuse publishing equal-time fake karaoke cues.`,
-    );
+    // P0 Chris cold-create (2026-09-15 HT): after vocal-force retries, a few script
+    // lines may still miss stamps (missing=2 of ~35). writePreviewAudio already
+    // sets display = lyricsFromSungCues — that IS the honest path (never show
+    // unsung shells). Do not hard-fail the whole /create → preview → checkout
+    // funnel for partial coverage when vocals are real.
+    console.error("[elevenlabs] partial script coverage after retries — publish sung-only display", {
+      jobId: job.id,
+      missing: scriptMissing.length,
+      sample: scriptMissing.slice(0, 2),
+      stampCount: result.stampCount,
+      midFrac: presence.midFrac,
+    });
   }
 
   return result;
