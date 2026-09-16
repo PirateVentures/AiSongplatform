@@ -130,6 +130,61 @@ export function readMp3DurationSeconds(bytes: Uint8Array): number | null {
   return (frames * samplesPerFrame) / sampleRate;
 }
 
+function mpegFrameLength(bytes: Uint8Array, frame: number): number {
+  if (frame < 0 || frame + 4 >= bytes.byteLength) return 0;
+  const b1 = bytes[frame + 1]!;
+  const b2 = bytes[frame + 2]!;
+  const versionBits = (b1 >> 3) & 0x03;
+  const layerBits = (b1 >> 1) & 0x03;
+  if (layerBits !== 1) return 0;
+  const bitrateTable: Record<number, number[]> = {
+    3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+    2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    0: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+  };
+  const srTable = [
+    [11025, 12000, 8000],
+    [0, 0, 0],
+    [22050, 24000, 16000],
+    [44100, 48000, 32000],
+  ];
+  const br = (bitrateTable[versionBits] || [])[(b2 >> 4) & 0x0f] || 0;
+  const sr = srTable[versionBits]?.[(b2 >> 2) & 0x03] || 0;
+  if (!br || !sr) return 0;
+  const padding = (b2 >> 1) & 0x01;
+  const scale = versionBits === 3 ? 144000 : 72000;
+  return Math.floor((scale * br) / sr) + padding;
+}
+
+/** Cut at end of last complete MPEG frame (Safari rejects mid-frame truncations). */
+function alignCutToMpegFrame(bytes: Uint8Array, keepBytes: number): Uint8Array {
+  if (!bytes || keepBytes <= 0) return bytes;
+  const target = Math.min(keepBytes, bytes.byteLength);
+  if (target >= bytes.byteLength) return bytes;
+  let pos = findMpegFrame(bytes, skipId3(bytes));
+  if (pos < 0) return bytes.subarray(0, target);
+  let lastEnd = pos;
+  let steps = 0;
+  while (pos >= 0 && pos < target && steps < 300000) {
+    steps += 1;
+    let len = mpegFrameLength(bytes, pos);
+    if (len < 24) {
+      const next = findMpegFrame(bytes, pos + 1);
+      if (next < 0) break;
+      len = next - pos;
+      if (len < 24 || len > 2881) {
+        pos = next;
+        continue;
+      }
+    }
+    const end = pos + len;
+    if (end > target) break;
+    lastEnd = end;
+    pos = findMpegFrame(bytes, end);
+  }
+  return bytes.subarray(0, Math.min(Math.max(lastEnd, 4096), bytes.byteLength));
+}
+
 /**
  * Truncate MP3 for unpaid preview. Prefer duration-proportional cut (VBR-safe)
  * using Xing/Info when present; else assume ~180kbps average gift bitrate.
@@ -139,17 +194,19 @@ export function truncateMp3ToSeconds(bytes: Uint8Array, maxSeconds = PREVIEW_MAX
 
   const duration = readMp3DurationSeconds(bytes);
   let cut: Uint8Array | null = null;
+  let keep = 0;
   if (duration && duration > maxSeconds + 0.5) {
-    const keep = Math.floor(bytes.byteLength * (maxSeconds / duration));
-    cut = bytes.subarray(0, Math.max(keep, 4096));
+    keep = Math.max(4096, Math.floor(bytes.byteLength * (maxSeconds / duration)));
   } else if (duration && duration <= maxSeconds + 0.5) {
     return bytes;
   } else {
     // Fallback when Xing is missing: ~180kbps average (matches current gift encodes).
     const maxBytes = Math.floor((180_000 * maxSeconds) / 8) + 65_536;
     if (bytes.byteLength <= maxBytes) return bytes;
-    cut = bytes.subarray(0, maxBytes);
+    keep = maxBytes;
   }
+  // Safari: mid-frame cut → decode fail. Align to last complete MPEG frame.
+  cut = alignCutToMpegFrame(bytes, keep);
   // CRITICAL: never leave full-length Xing on a truncated preview body (iOS silent-halfway).
   return rewriteXingForTruncatedPreview(cut, duration, maxSeconds);
 }

@@ -212,21 +212,86 @@ function rewriteXingForTruncatedPreview(bytes, originalDuration, maxSeconds) {
   return out;
 }
 
+
+function mpegFrameLength(bytes, frame) {
+  if (frame < 0 || frame + 4 >= bytes.byteLength) return 0;
+  const b1 = bytes[frame + 1];
+  const b2 = bytes[frame + 2];
+  const versionBits = (b1 >> 3) & 0x03;
+  const layerBits = (b1 >> 1) & 0x03;
+  if (layerBits !== 1) return 0; // Layer III only
+  const bitrateTable = {
+    // MPEG1 Layer3
+    3: [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0],
+    // MPEG2/2.5 Layer3
+    2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+    0: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0],
+  };
+  const srTable = [
+    [11025, 12000, 8000],
+    [0, 0, 0],
+    [22050, 24000, 16000],
+    [44100, 48000, 32000],
+  ];
+  const brIndex = (b2 >> 4) & 0x0f;
+  const srIndex = (b2 >> 2) & 0x03;
+  const padding = (b2 >> 1) & 0x01;
+  const br = (bitrateTable[versionBits] || [])[brIndex] || 0;
+  const sr = srTable[versionBits]?.[srIndex] || 0;
+  if (!br || !sr) return 0;
+  // MPEG1: 144000*br/sr + pad; MPEG2/2.5: 72000*br/sr + pad
+  const scale = versionBits === 3 ? 144000 : 72000;
+  return Math.floor((scale * br) / sr) + padding;
+}
+
+/** Cut at end of last complete MPEG frame at/before keepBytes (Safari rejects mid-frame). */
+function alignCutToMpegFrame(bytes, keepBytes) {
+  if (!bytes || keepBytes <= 0) return bytes;
+  const target = Math.min(keepBytes, bytes.byteLength);
+  if (target >= bytes.byteLength) return bytes;
+  let pos = findMpegFrame(bytes, skipId3(bytes));
+  if (pos < 0) return bytes.subarray(0, target);
+  let lastEnd = pos;
+  let steps = 0;
+  while (pos >= 0 && pos < target && steps < 300000) {
+    steps += 1;
+    let len = mpegFrameLength(bytes, pos);
+    if (len < 24) {
+      // VBR free-bitrate / false sync: use distance to next frame sync.
+      const next = findMpegFrame(bytes, pos + 1);
+      if (next < 0) break;
+      len = next - pos;
+      if (len < 24 || len > 2881) {
+        pos = next;
+        continue;
+      }
+    }
+    const end = pos + len;
+    if (end > target) break;
+    lastEnd = end;
+    pos = findMpegFrame(bytes, end);
+  }
+  const cutAt = Math.max(lastEnd, 4096);
+  return bytes.subarray(0, Math.min(cutAt, bytes.byteLength));
+}
+
+
 /** Hard-cap unpaid preview MP3 to maxSeconds; rewrite Xing so scrubber matches body. */
 function hardCapPreviewMp3(bytes, maxSeconds) {
   if (!bytes || maxSeconds <= 0 || bytes.byteLength < 4096) return bytes;
   const duration = readMp3DurationSeconds(bytes);
-  let cut = null;
+  let keep = null;
   if (duration && duration > maxSeconds + 0.5) {
-    const keep = Math.floor(bytes.byteLength * (maxSeconds / duration));
-    cut = bytes.subarray(0, Math.max(keep, 4096));
+    keep = Math.max(4096, Math.floor(bytes.byteLength * (maxSeconds / duration)));
   } else if (duration && duration <= maxSeconds + 0.5) {
     return bytes;
   } else {
     const maxBytes = Math.floor((180_000 * maxSeconds) / 8) + 65_536;
     if (bytes.byteLength <= maxBytes) return bytes;
-    cut = bytes.subarray(0, maxBytes);
+    keep = maxBytes;
   }
+  // Safari/WebKit: mid-frame cut → decode fail / silent play. Align to frame end.
+  const cut = alignCutToMpegFrame(bytes, keep);
   return rewriteXingForTruncatedPreview(cut, duration, maxSeconds);
 }
 
