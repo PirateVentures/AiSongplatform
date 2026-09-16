@@ -32,9 +32,8 @@ export function SongDelivery({ job }: { job: PublicSongJob }) {
       <div className="rounded-3xl border border-[var(--line)] bg-white/70 p-5">
         <p className="text-sm uppercase tracking-[0.18em] text-[var(--copper)]">Keep it</p>
         <p className="mt-2 text-[var(--muted)]">
-          Download the MP3 for phone &amp; text. We also email this private page to{" "}
-          <span className="text-[var(--ink)]">{job.email || "you"}</span> when delivery mail is
-          connected.
+          Keep the MP3 for your phone and texts. We also email this private page to{" "}
+          <span className="text-[var(--ink)]">{job.email || "you"}</span>.
         </p>
         <div className="mt-5 flex flex-wrap gap-3">
           <a className="rounded-full bg-[var(--ink)] px-5 py-3 text-white" href={mp3Href}>
@@ -44,7 +43,7 @@ export function SongDelivery({ job }: { job: PublicSongJob }) {
             className="rounded-full border border-[var(--line)] bg-white px-5 py-3"
             href={wavHref}
           >
-            Download WAV (studio)
+            Download WAV
           </a>
           {job.includeLyricPrint ? (
             <a
@@ -59,12 +58,12 @@ export function SongDelivery({ job }: { job: PublicSongJob }) {
             onClick={copy}
             className="rounded-full border border-[var(--line)] bg-white px-5 py-3"
           >
-            {copied ? "Link copied" : "Copy private link"}
+            {copied ? "Link copied" : "Copy this page's link"}
           </button>
         </div>
       </div>
       <p className="text-sm text-[var(--muted)]">
-        {brand.tagline} Share the private link only with people who should hear it.
+        {brand.tagline} Only share this page with people who should hear it.
       </p>
     </div>
   );

@@ -52,10 +52,10 @@ export function GiftDeliveryTemplate({
           </p>
         </div>
         <p className="pt-1 text-[var(--muted)]">
-          Play the keepsake, then send the gift card — download the MP3 for phone &amp; text
+          Play it whenever you like. Send the gift card, keep the MP3 for your phone
           {job.email ? (
             <>
-              , and we also email this private page to{" "}
+              {" "}— and we&apos;ll email this private page to{" "}
               <span className="text-[var(--ink)]">{job.email}</span>
             </>
           ) : null}

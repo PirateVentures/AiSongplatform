@@ -110,7 +110,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
 
       if (canShareFiles && typeof navigator.share === "function") {
         await navigator.share(withFiles);
-        setNote("Opened your share sheet.");
+        setNote("Ready to send — pick Messages, Mail, or whoever should have it.");
         return;
       }
 
@@ -125,7 +125,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(objectUrl), 2_000);
       await copyPrivateLink();
-      setNote("Saved the gift card image and copied the private link.");
+      setNote("Saved the card image and copied the page link.");
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         setNote("");
@@ -133,7 +133,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
       }
       try {
         await copyPrivateLink();
-        setNote("Copied the private link — you can still download the QR PNG below.");
+        setNote("Copied the page link — you can still save the card image below.");
       } catch {
         setNote(err instanceof Error ? err.message : "Could not share just now.");
       }
@@ -189,7 +189,7 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
           className="rounded-full border border-[var(--line)] bg-white px-4 py-2.5 text-sm"
           href={pdfHref}
         >
-          Download PDF
+          Save as PDF
         </a>
         <a
           className="rounded-full border border-[var(--copper)]/40 bg-[#f8e7db] px-4 py-2.5 text-sm text-[var(--copper-dark)]"
@@ -236,9 +236,9 @@ export function GiftCardPrint({ job }: { job: PublicSongJob }) {
           <div className="flex items-end justify-between gap-4 border-t border-[var(--line)] pt-4">
             <div className="text-sm">
               <p className="text-xs uppercase tracking-[0.18em] text-[var(--copper)]">
-                Scan to open
+                Open their song
               </p>
-              <p className="mt-1 font-medium text-[var(--ink)]">their private song</p>
+              <p className="mt-1 font-medium text-[var(--ink)]">whenever they want</p>
               <p className="mt-2 text-xs text-[var(--muted)]">
                 Tuck this card in the box or bag.
               </p>

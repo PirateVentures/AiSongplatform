@@ -2,8 +2,11 @@ import { fulfillPaidJob } from "./fulfill";
 import { getJob, getJobByCheckoutSessionId } from "./store";
 import type { SongJob } from "./types";
 
-/** Internal promo — unlocks without charging Joseph. Not a Whop dashboard coupon. */
+/** Internal ops unlock — not shown on the public gift face. */
 export const FREESNUGGLE_CODE = "FREESNUGGLE";
+
+/** Public friend-gift reward on paid /song share CTA. First song on us. */
+export const GIFTALONG_CODE = "GIFTALONG";
 
 export const PAID_WEBHOOK_TYPES = new Set([
   "payment.succeeded",
@@ -11,9 +14,12 @@ export const PAID_WEBHOOK_TYPES = new Set([
 ]);
 
 export function matchesFreeSnuggle(code: unknown): boolean {
-  return String(code ?? "")
+  const normalized = String(code ?? "")
     .trim()
-    .toUpperCase() === FREESNUGGLE_CODE;
+    .toUpperCase();
+  return (
+    normalized === FREESNUGGLE_CODE || normalized === GIFTALONG_CODE
+  );
 }
 
 export function checkoutJobMetadata(jobId: string, includeLyricPrint: boolean) {

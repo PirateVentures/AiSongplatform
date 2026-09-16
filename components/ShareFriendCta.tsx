@@ -2,11 +2,11 @@
 
 import { useState } from "react";
 
-const INVITE_PATH = "/create?from=gift&utm_source=song_gift&utm_medium=share_friend";
+const INVITE_PATH = "/create?from=gift&utm_source=song_gift&utm_medium=share_friend&promo=GIFTALONG";
 
 /**
- * Fills dead space under the lyrics on paid /song (desktop).
- * Soft referral: share a friend invite to make a keepsake song.
+ * Under-lyrics gift reward on paid /song.
+ * Soft cohesion with the QR keepsake — pass a free first song, not a referral funnel.
  */
 export function ShareFriendCta() {
   const [note, setNote] = useState("");
@@ -20,22 +20,22 @@ export function ShareFriendCta() {
         ? `${window.location.origin}${INVITE_PATH}`
         : `https://songsnuggle.com${INVITE_PATH}`;
     const text =
-      "A song they can keep — make one for someone you love:";
+      "Someone you love might need a song too. Your first SongSnuggle is on us — use code GIFTALONG:";
     try {
-      const payload = { title: "SongSnuggle for a friend", text, url };
+      const payload = { title: "A song they can keep", text, url };
       if (typeof navigator.share === "function" && navigator.canShare?.(payload)) {
         await navigator.share(payload);
-        setNote("Invite shared.");
+        setNote("Sent with love.");
         return;
       }
       await navigator.clipboard.writeText(`${text} ${url}`);
-      setNote("Invite copied — paste it in a text.");
+      setNote("Ready to paste in a text.");
     } catch {
       try {
         await navigator.clipboard.writeText(url);
-        setNote("Link copied.");
+        setNote("Link copied — paste it whenever you're ready.");
       } catch {
-        setNote("Open songsnuggle.com/create and share it with a friend.");
+        setNote("Open songsnuggle.com and make one for someone you love.");
       }
     } finally {
       setBusy(false);
@@ -45,14 +45,14 @@ export function ShareFriendCta() {
   return (
     <section className="rounded-[1.5rem] border border-[var(--copper)]/30 bg-gradient-to-br from-[#fffaf2] to-[#eef3ee] p-5 shadow-[0_10px_28px_rgba(60,40,20,0.06)] md:p-6">
       <p className="text-xs uppercase tracking-[0.2em] text-[var(--copper)]">
-        Pass it on
+        Because this meant something
       </p>
       <h3 className="serif mt-2 text-2xl text-[var(--ink)]">
-        Know someone else who needs a song?
+        Send someone a free first song
       </h3>
       <p className="mt-2 text-sm leading-relaxed text-[var(--muted)]">
-        Send them a friend invite to make theirs. A little gift, passed along —
-        same warm keepsake feeling you just got.
+        The keepsake you just got was made to be passed along. Share this with a
+        friend — their first song is on us, same warm feeling.
       </p>
       <div className="mt-4 flex flex-wrap gap-3">
         <button
@@ -61,13 +61,13 @@ export function ShareFriendCta() {
           disabled={busy}
           className="rounded-full bg-[var(--ink)] px-5 py-3 text-sm text-white disabled:opacity-60"
         >
-          {busy ? "Preparing…" : "Share with a friend"}
+          {busy ? "One moment…" : "Send them a free song"}
         </button>
         <a
           className="rounded-full border border-[var(--line)] bg-white px-5 py-3 text-sm"
           href={INVITE_PATH}
         >
-          Open invite
+          Start one for them
         </a>
       </div>
       {note ? (
