@@ -347,7 +347,8 @@ async function tryServeAudio(request, env) {
   const download = url.searchParams.get("download") === "1";
   const formatParam = (url.searchParams.get("format") || "").toLowerCase();
   const wantWav = formatParam === "wav";
-  // Elon P0: ?format=mp3 must NEVER return WAV.
+  // Elon P0: play ?format=mp3 without download must NEVER return WAV (404 → client fallback).
+  // Download may fall back to WAV attachment when MP3 missing.
   const wantMp3Explicit = formatParam === "mp3";
 
   let bytes = null;
@@ -365,7 +366,9 @@ async function tryServeAudio(request, env) {
     }
   }
 
-  if ((!bytes || bytes.byteLength === 0) && wantMp3Explicit) {
+  // Elon P0: play format=mp3 without download may 404 (client falls back).
+  // Download must NEVER return JSON when WAV bytes exist — serve WAV attachment.
+  if ((!bytes || bytes.byteLength === 0) && wantMp3Explicit && !download) {
     return new Response(
       JSON.stringify({
         error: "MP3 not available for this song (format=mp3 never returns WAV).",

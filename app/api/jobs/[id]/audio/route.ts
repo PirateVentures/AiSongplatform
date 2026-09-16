@@ -156,12 +156,14 @@ export async function GET(
       if (bytes && bytes.byteLength > 0) {
         contentType = "audio/mpeg";
         ext = "mp3";
-      } else if (wantMp3Explicit) {
+      } else if (wantMp3Explicit && !download) {
+        // Elon P0: play with format=mp3 may 404 so LyricAudio can strip format → WAV.
         return NextResponse.json(
           { error: "MP3 not available for this song (format=mp3 never returns WAV)." },
           { status: 404 },
         );
       } else {
+        // Download must never save JSON when WAV bytes exist — serve WAV attachment.
         bytes = await readAudio(id, kind, "wav");
         contentType = "audio/wav";
         ext = "wav";

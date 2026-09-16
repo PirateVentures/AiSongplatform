@@ -670,8 +670,27 @@ export async function writeFullAudio(job: SongJob) {
     });
   }
 
-  const fullMp3 = gate.mp3Ok && rendered.mp3 && rendered.mp3.byteLength > 0 ? rendered.mp3 : null;
+  let fullMp3 = gate.mp3Ok && rendered.mp3 && rendered.mp3.byteLength > 0 ? rendered.mp3 : null;
   await writeAudio(job.id, "full", rendered.wav, "wav");
+  // Same-master: if EL full MP3 missing/dropped, encode from THIS full WAV (not dual compose).
+  if (!fullMp3 && rendered.wav && rendered.wav.byteLength > 1024) {
+    try {
+      const { encodeWavToMp3 } = await import("./wav-to-mp3");
+      fullMp3 = encodeWavToMp3(new Uint8Array(rendered.wav), 192);
+      console.info("[music] full MP3 encoded from WAV (same master)", {
+        jobId: job.id,
+        wavBytes: rendered.wav.byteLength,
+        mp3Bytes: fullMp3.byteLength,
+        priorReason: gate.reason,
+      });
+    } catch (err) {
+      console.error("[music] full WAV→MP3 encode failed", {
+        jobId: job.id,
+        err: err instanceof Error ? err.message : String(err),
+      });
+      fullMp3 = null;
+    }
+  }
   if (fullMp3) {
     await writeAudio(job.id, "full", fullMp3, "mp3");
   }
@@ -688,7 +707,7 @@ export async function writeFullAudio(job: SongJob) {
   const masterFingerprint = audioHeadFingerprint(new Uint8Array(rendered.wav));
   const masterSourceId = newMasterSourceId(job.id, masterFingerprint);
 
-  // WAV master is always written; MP3 backfill via box ffmpeg if EL bitstream was bad.
+  // WAV master always written; full MP3 from EL or same-master encodeWavToMp3 above.
   // Fit cues to the master that was actually stored (not the EL stamp timeline).
   const { audioDurationSeconds } = await import("./music-elevenlabs");
   let cues = rendered.cues || [];
